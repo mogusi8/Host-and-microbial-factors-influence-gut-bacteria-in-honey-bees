@@ -1,0 +1,709 @@
+---
+title: "AMP_Sensitivity_Growth_curve_analyis"
+author: "Silvia Moriano-Gutierrez"
+date: "10/24/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##################################
+## Project description
+##################################
+Project: Host and microbial factors influence gut bacteria in honey bees
+Purpose of this script: quantify bacterial sensitivity to host antimicrobial peptides (AMPs) across a panel of native and non-native strains, and relate those sensitivities to colonization trends observed in vivo. To evaluate the potential role of host AMPs in shaping colonization outcomes, a subset of native and non-native strains was screened in vitro, and sensitivity scores were derived based on growth inhibition across AMP dilution series, with higher scores reflecting greater susceptibility.
+
+
+## Analysis of AMPs sensitivity between different colonizing strains in the honey bee gut
+
+Growth curve data parameters were obtained with grothcurver package in script 01 for "Growth_Curve_Analysis". 
+In this pipeline we combined the parameters obtained for each of the strains and test if they are significantly different than the control. 
+* Experimental design: 
+6 peptides were tested: Abaecin, Apidaecin1a, Apidaecin1b, Defensin1, Defensin2 and Hymenoptaecin. Concentrations tested range from 100 ug/ml to 0.0487 ug/ml, in a 1:2 dilution series. 
+# Download and install the packages
+```{r}
+library(tidyverse)
+library(zoo)
+library(broom)
+library(dplyr)
+library(growthcurver)
+library(knitr)
+library(car)
+library(grid)
+library(gtable)
+library(ggpubr)
+library(ggplot2)
+library(hms)
+library(reshape2)
+
+# Project directories 
+data_dir <- here::here("data", "amp_sensitivity")
+raw_dir <- file.path(data_dir, "raw") # raw plate exports (CSV/XLSX saved as CSV)
+meta_dir <- file.path(data_dir, "metadata") # plate map(s)
+out_dir <- here::here("output", "amp_sensitivity")
+fig_dir <- file.path(out_dir, "figures")
+tab_dir <- file.path(out_dir, "tables")
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(tab_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+
+#input parameter files
+
+Input data and add one column to each dataframe  for the strain and one column for the category: "other bee species", "opportunistic colonizers", "other microbiomes".
+```{r}
+
+#Plate map
+plate_map <- read_csv(
+file.path(meta_dir, "plate_map.csv"),
+show_col_types = FALSE
+) |>
+clean_names() |>
+mutate(well = str_to_upper(well))
+
+#Raw files list (all *_Results.csv or .csv)
+
+raw_files <- list.files(raw_dir, pattern = "\.csv$", full.names = TRUE, recursive = TRUE)
+length(raw_files)
+
+# List all subdirectories within the main directory
+subdirectories <- list.dirs(main_directory, full.names = TRUE, recursive = FALSE)
+
+# Define the common ending of the file name
+common_ending <- "all3replicates_parameters_qvalues.csv"
+
+# Initialize a list to store data frames
+data_frames <- list()
+
+# Loop through each subdirectory
+for (subdir in subdirectories) {
+# Extract the identifier from the subdirectory name
+  identifier <- basename(subdir)
+  
+  # Define the file name based on the identifier
+  file_name <- paste0(identifier, "_", common_ending)
+  
+  # Construct the full path to the file
+  file_path <- file.path(subdir, file_name)
+  
+  # Check if the file exists, and if it does, load it
+  if (file.exists(file_path)) {
+    # Load the file into a data frame
+    df <- read.csv(file_path)
+    
+    # Create new columns "Strain" and "Category"
+    df$Strain <- identifier
+    
+    # Set the "Category" column based on the identifier
+    if (identifier %in% c("ESL0230", "ESL0254", "ESL1044", "ESL1042", "ESL0710", "ESL0693", "ESL0404", "ESL0447", "ESL0253", "ESL0721", "ESL0405")) {
+      df$Category <- "Other bee species"
+    } else if (identifier %in% c("BBC03_29", "ESL0497", "ESL0943", "ESL0165", "ESL0947", "ESL0935" )) {
+      df$Category <- "Opportunistic pathogens"
+    } else if (identifier %in% c("ESL0607","KB1", "ESL1027")) {
+      df$Category <- "Other microbiomes"
+    } else {
+      df$Category <- "Native"  
+    }
+    
+    # Append the data frame to the list
+    data_frames <- c(data_frames, list(df))
+  }
+}
+data_frames
+# data_frames now contains the imported data frames with "Strain" and "Category" columns.
+
+# Combine all data frames
+combined_data <- do.call(rbind, data_frames)
+
+
+output_file_name1 <- file.path(tab_dir, "all_strains_parameters.csv")
+
+write.table(
+  combined_data,
+  file = output_file_name1,
+  quote = FALSE,
+  sep = ",",
+  row.names = FALSE
+)
+```
+#Plot and analyze growt parameter data.
+Plot normalized biomass for all Strains. Biomass= r*AUC. Then is normalized to the biomass of the control in each plate (no AMPs added). 
+
+```{r}
+
+#Subset datasets by peptides for easier plotting
+abaecin <- subset(combined_data, Condition == "Abaecin")
+apidaecin1a <- subset(combined_data, Condition == "Apidaecin1a")
+apidaecin1b <- subset(combined_data, Condition == "Apidaecin1b")
+defensin1	 <- subset(combined_data, Condition == "defensin1")
+defensin2	 <- subset(combined_data, Condition == "defensin2")
+hymenoptaecin	 <- subset(combined_data, Condition == "hymenoptaecin")
+
+```
+
+###
+### Abaecin
+###
+
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = abaecin,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+  #scale_y_log10(limits = c(0.01, 10)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Abaecin") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "Abaecin_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+# Calculate t-tests for each combination
+t_test_results_08 <- abaecin %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+# Add significance indicators to the plot
+
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "Abaecin_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+
+```
+###
+### Apidaecin1a
+###
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = apidaecin1a,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+  #scale_y_log10(limits = c(0.01, 10)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Apidaecin1a") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "apidaecin1a_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+# Calculate t-tests for each combination
+t_test_results_08 <- apidaecin1a %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+
+
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+# Add significance indicators to the plot
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "apidaecin1a_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+```
+
+###
+### Apidaecin1b
+###
+
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = apidaecin1b,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+  #scale_y_log10(limits = c(0.001, 100)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Apidaecin1b") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "apidaecin1b_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+# Calculate t-tests for each combination
+t_test_results_08 <- apidaecin1b %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+# Add significance indicators to the plot
+
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "apidaecin1b_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+```
+
+###
+### defensin1
+###
+
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = defensin1,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+  #scale_y_log10(limits = c(0.001, 100)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Defensin1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "defensin1_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+# Calculate t-tests for each combination
+t_test_results_08 <- defensin1 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+# Add significance indicators to the plot
+
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "defensin1_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+```
+
+###
+### defensin2
+###
+
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = defensin2,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+ # scale_y_log10(limits = c(0.001, 100)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Defensin2") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "defensin2_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+# Calculate t-tests for each combination
+t_test_results_08 <- defensin2 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+# Add significance indicators to the plot
+
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "defensin2_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+```
+
+###
+### hymenoptaecin
+###
+
+
+```{r}
+#############
+## AUC ##
+#############
+
+AUC_all_plot <- ggplot(data = hymenoptaecin,
+       aes(x = reorder(Strain, as.numeric(Category)), y = auc_l.norm, color = Category)) +
+  geom_point(position = position_jitter(width = 0.3, height = 0)) +
+  stat_summary(
+    fun.data = "mean_cl_boot",
+    colour = "red",
+    geom = "crossbar",
+    linewidth = 0.2,
+    size = 0.2
+  ) +
+  facet_grid(concentrations ~ ., scales = "free_y") +
+  scale_color_manual(values = c('grey48', 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") + 
+  #scale_y_log10(limits = c(0.001, 100)) +  # Set the y-axis to a log10 scale with specified limits
+  geom_hline(yintercept = 1, color = "black") +
+  theme_bw() +
+  labs(y = "Normalized AUC") +
+  ggtitle("Hymenoptaecin") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("") 
+
+print(AUC_all_plot)
+
+ggsave(
+  filename  = file.path(fig_dir, "hymenoptaecin_AUC.norm.pdf"),
+  plot      = AUC_all_plot,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+# Calculate t-tests for each combination
+t_test_results_08 <- hymenoptaecin %>%
+  group_by(Strain, concentrations) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+# Adjust p-values using q-value
+
+# Correct for multiple comparisons using FDR
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+# Add significance indicators to the plot
+
+AUC_all_plot_fdr_pv_0.8 <- AUC_all_plot +
+  geom_text(data = t_test_results_08 %>% filter(fdr_AUC_0.8 < 0.05), aes(label = "*"), vjust = -0.5, hjust = 0.5)
+
+print(AUC_all_plot_fdr_pv_0.8)
+
+ggsave(
+  filename  = file.path(fig_dir, "hymenoptaecin_AUC.norm_fdr_pv_0.8.pdf"),
+  plot      = AUC_all_plot_fdr_pv_0.8,
+  height    = 8,
+  width     = 10,
+  limitsize = FALSE
+)
+
+```
+
+
+################                   ################
+################ Sensitivity score ################
+################                   ################
+
+# create combined dataset with significant data
+
+As previously, perform 1 sample t-test to compare hypotetical values  (mu) of 0.8. Always correcting for multiple comparisons. 
+Then assign a Sensitivity score for each hypothetical value, where the minimal concentration of the peptide where there is a significant difference with mu is assigned a number from 1 to 12 (more concentrated to less concentrated). We will get the sensitivity score for each strain and peptide.To get the global sensitivity score for each peptide score will be added.  
+```{r}
+
+# remove p and q values dragged from past test. 
+combined_data <- subset(combined_data, select = -c(p_value, q_value))
+
+## Add 1 sample t_test results for each peptide and parameter:biomass.norm, auc_l.norm
+t_test_results_08 <- combined_data %>%
+  group_by(Strain, concentrations, Condition) %>%
+  mutate(p_value_AUC_0.8 = t.test(auc_l.norm, mu = 0.8, alternative = "less")$p.value)
+
+# Correct for multiple comparisons
+t_test_results_08 <- t_test_results_08 %>%
+  group_by(Strain, concentrations) %>%
+  mutate(fdr_AUC_0.8 = p.adjust(p_value_AUC_0.8, method = "fdr"))
+
+#combine all. 
+
+t_test_all= if (!all(c("p_value_AUC_0.8", "fdr_AUC_0.8") %in% colnames(t_test_results))) {
+  A <- cbind(t_test_results, t_test_results_08[, c("p_value_AUC_0.8", "fdr_AUC_0.8")])
+}    
+
+print(t_test_all)
+ # save table
+output_file_name4 <- file.path(tab_dir, "all_strains_significant_AUC_biomass_FDR.csv")
+
+write.table(
+  t_test_all,
+  file = output_file_name4,
+  quote = FALSE,
+  sep = ",",
+  row.names = FALSE
+)
+```
+# Calculate sensitivity score for all 3 thersholds: 1, 0.8 and 0.5
+for every combination of strain and peptide the smallest concentration where fdr<0.05 is given a value according to the following : when Concentration is 100=1, 50=2, 25=3, 12.5=4, 6.25=5, 3.125=6, 1.56=6, 0.78=8, 0.39=9, 0.195=10,  0.0975=11, 0.0487=12
+```{r}
+
+# Create a lookup table for concentration values
+concentration_lookup <- data.frame(
+  concentrations = c(100, 50, 25, 12.5, 6.25, 3.125, 1.56, 0.78, 0.39, 0.195, 0.0975, 0.0487),
+  Value = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+)
+
+sensitivity_score_AUC_08 <- t_test_all %>%
+  filter(fdr_AUC_0.8 < 0.05) %>%  # Filter rows with fdr < 0.05
+  inner_join(concentration_lookup, by = "concentrations") %>%  # Join with the lookup table
+  group_by(Strain, Condition) %>%  # Group by Strain and Peptide
+  summarize(Min_concentrations_AUC_08 = max(Value)) %>%  # Calculate the minimum value for each group. Add 1 to adjust the value. 
+  ungroup()  # Ungroup the data
+
+
+# Combine datasets
+
+ss_all= merge(sensitivity_score_AUC, sensitivity_score_AUC_08, by=c("Strain", "Condition"), all=TRUE)
+
+ss_all[is.na(ss_all)] <- 0 #replace missing values to 0
+
+# crate a summary dataframe by strain, regardless of the Peptide
+
+ss_by_strain <- ss_all %>%
+  group_by(Strain) %>%
+  summarize(Sum_Min_concentrations_AUC_08 = sum(Min_concentrations_AUC_08)
+            )
+#convert to long format for easier plotting
+df <- melt(ss_by_strain, id.vars = "Strain", variable.name = "score_type",
+           value.name="scores")
+
+ggplot(df, aes(x = Strain , y= scores, fill = score_type)) +
+  geom_bar(position="dodge", stat = "identity")
+
+
+#Complete dataframe 
+#Add all strains 
+strain_name=combined_data$Strain
+strain_name <- unique(strain_name)
+
+
+# Filter missing strains
+missing_strains <- setdiff(strain_name, df$Strain)
+
+# Create a dataframe with missing strains and set all columns to 0
+missing_strains_df1 <- data.frame(Strain = missing_strains)
+
+ss_all_df <- merge(ss_all, missing_strains_df1, by="Strain", all=TRUE)
+ss_all_df[is.na(ss_all_df)] <- 0 #replace missing values to 0
+# add category
+ss_all_df <- ss_all_df %>%
+  mutate(
+    Category = case_when(
+      Strain %in% c("ESL0230", "ESL0254", "ESL1044", "ESL1042", "ESL0710", "ESL0693", "ESL0404", "ESL0405", "ESL0447", "ESL0253", "ESL0721") ~ "Other bee species",
+      Strain %in% c("BBC03_29", "ESL0497", "ESL0943", "ESL0165", "ESL0947", "ESL0935") ~ "Opportunistic pathogens",
+      Strain %in% c("ESL0607", "KB1", "ESL1027") ~ "Other microbiomes",
+      TRUE ~ "Native"
+    )
+  )
+
+
+
+
+# Filter missing strains
+missing_strains <- setdiff(strain_name, df$Strain)
+
+# Create a dataframe with missing strains and set all columns to 0
+missing_strains_df <- data.frame(Strain = missing_strains)
+
+result_df <- merge(ss_by_strain, missing_strains_df, by="Strain", all=TRUE)
+result_df[is.na(result_df)] <- 0 #replace missing values to 0
+# add category
+result_df <- result_df %>%
+  mutate(
+    Category = case_when(
+      Strain %in% c("ESL0230", "ESL0254", "ESL1044", "ESL1042", "ESL0710", "ESL0693", "ESL0404", "ESL0405", "ESL0253", "ESL0447", "ESL0721") ~ "Other bee species",
+      Strain %in% c("BBC03_29", "ESL0497", "ESL0943", "ESL0165", "ESL0947", "ESL0935") ~ "Opportunistic pathogens",
+      Strain %in% c("ESL0607", "KB1", "ESL1027") ~ "Other microbiomes",
+      TRUE ~ "Native"
+    )
+  )
+
+df2 <- melt(result_df, id.vars = c("Strain", "Category"), variable.name = "score_type",
+           value.name="scores")
+
+ggplot(df2, aes(x = Category , y= scores, fill = score_type)) +
+  geom_bar(position="dodge", stat = "identity") +
+  geom_point(data = df2, aes(x = Category, y = scores), position = position_dodge(width = 0.8), color = "black", size = 2)
+
+
+ # save table
+
+output_file_name5 <- file.path(tab_dir, "all_strains_sensitivity_scores_by_peptide.csv")
+write.table(
+  ss_all_df,
+  file = output_file_name5,
+  quote = FALSE,
+  sep = ",",
+  row.names = FALSE
+)
+
+output_file_name6 <- file.path(tab_dir, "all_strains_sensitivity_scores.csv")
+write.table(
+  result_df,
+  file = output_file_name6,
+  quote = FALSE,
+  sep = ",",
+  row.names = FALSE
+)
+
+
+```
