@@ -1,0 +1,135 @@
+---
+title: "Phylogenetic_signal"
+author: "Silvia Moriano-Gutierrez"
+date: "3/6/2023"
+output: html_document
+---
+##################################
+## Project description
+##################################
+Project: Host and microbial factors influence gut bacteria in honey bees
+Purpose of this script: This script tests whether host–microbe colonization traits show phylogenetic signal across the bee-associated strain panel. Using a rooted species tree and trait data (e.g., median abundance, fold change in community, mono-association outcomes).
+
+
+## Loading R packages
+
+```{r }
+library(picante)
+library(phylobase)
+library(ape)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(agrmt)
+library(performance)
+library(DHARMa)
+
+# project-relative dirs
+data_dir        <- here::here("data")
+phylo_dir       <- file.path(data_dir, "phylogeny")
+phylo_data_dir  <- file.path(data_dir, "phylogenetic_distances")
+
+out_dir   <- here::here("output")
+out_phylo <- file.path(out_dir, "phylogenetic_distances")
+dir.create(out_phylo, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Load Data
+```{r}
+
+#get phylogenetic tree from all invader+SC strains
+
+phy <- file.path(phylo_dir, "SpeciesTree_rooted_node_labels_renamed.nexus")
+phy <- read.nexus(phy)
+
+#Get colonization values: Abundance in monocol, abundance with SC, FC, etc.
+#Strains have to be in the same order than in the phy object.
+
+trait <- read.csv(
+file.path(qPCR_dir, "08_Median_abundance_and_FC.csv"),
+sep = ",",
+row.names = 1,
+header = TRUE
+)
+
+#sometimes we also used traits/09_Traits.csv in this script
+
+traits_extra <- read.csv(
+file.path(qPCR_dir, "09_Traits.csv"),
+sep = ",",
+header = TRUE
+)
+
+
+```
+
+## Calculate Phylogenetic signal with Picante R Package
+
+Blomberg's K-values. K measures the extent to which a trait displays phylogenetic signal, where K = 0 indicates no phylogenetic signal, K = 1 suggests that the trait distribution perfectly conforms to Brownian Motion (BM) and K > 1 indicates stronger similarities among closely related species than expected under BM. Values of K < 1.0 describe data with less phylogenetic signal than expected, and values of K > 1.0 describe data with greater phylogenetic signal than expected.
+
+```{r}
+labels=phy$tip.label
+strains= trait$Strain
+differences <- setdiff(labels, strains)
+differences
+
+trait <- trait[match(labels, trait$Strain), ]# reorder trait matrix to follow the tree order 
+rownames(trait) <- trait$Strain
+#trait <- trait[phy$tip.label, ] 
+traits=trait[,4:6] # only take quantitative data
+traits <- as.matrix(traits) 
+
+multiSig=multiPhylosignal(traits, phy, reps = 999, checkdata=FALSE)
+print(multiSig) # get Blomberg's K-values. 
+
+## EXPORT dataset
+  write.csv(multiSig, file = file.path(out_phylo, "phylosignal_traits.csv"))
+```
+
+
+
+# Get distances to closer native. 
+```{r}
+# Get distance matrix from phylogenetic tree. 
+phydist=as.matrix(cophenetic(phy)) 
+    write.csv(phydist, file=file.path(out_phylo, "phylogenetic_distances.csv"))
+ncol(phydist)
+
+
+phydist=as.matrix(phydist)
+
+
+# Change vector name. 
+myinvader= c("ESL0228", "ESL0230", "ESL0232", "ESL0253", "ESL0254", "ESL0404", "ESL0405", "ESL0432", "ESL0441", "ESL0443", "ESL0447", "ESL0449", "ESL0679", "ESL0680", "ESL0693", "ESL0710", "ESL0721", "BBC0329", "ESL0165", "ESL0497", "ESL0899", "ESL0935", "ESL0936", "ESL0937", "ESL0941", "ESL0943", "ESL0947", "ESL0602", "ESL0607", "ESL0610", "ESL0616", "ESL0944", "ESL1027", "I49", "KB1", "ESL1044", "ESL0954", "ESL1042")
+ mynative=c("ESL0024",   "ESL0169",  "ESL0184",  "ESL0198",  "ESL0034",   "ESL0177",  "ESL0185",  "ESL0284",  "ESL0145", "ESL0178",  "ESL0186",  "ESL0294",  "ESL0183",  "ESL0197")
+
+ #extract min number from each invader compared to all natives
+result_list <- list()
+my_dist=c()
+
+for (i in myinvader) {
+    d<- min(phydist[i, mynative])
+    result_list[[i]] <- d #get invader info
+    my_dist = c(my_dist, d)
+    c(paste(print(d), rownames(phydist)[i], colnames(phydist)[mynative], sep='/'))
+} 
+
+
+#combine results into dataframe
+phydist_dt= data.frame(myinvader, my_dist)
+colnames(phydist_dt)[1] <- "Strain" #rename first column
+# merge with abundance data
+phydist_dt=merge(phydist_dt,trait, by="Strain" )
+#colnames(phydist_dt)[2] <- "min.dist"
+phydist_dt
+colnames(phydist_dt)[2] <- "min.dist"
+## EXPORT dataset
+  write.csv(
+phydist_dt,
+file = file.path(out_phylo, "distances_traits.csv"),
+row.names = FALSE
+)
+```
+
+
+
