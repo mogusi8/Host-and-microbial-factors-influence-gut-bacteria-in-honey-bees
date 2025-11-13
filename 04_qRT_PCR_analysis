@@ -1,0 +1,2524 @@
+---
+title: "qPCR_Analysis_host_immune_genes"
+author: "Silvia Moriano-Gutierrez"
+date: "13/09/2023"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##################################
+## Project description
+##################################
+Project: Host and microbial factors influence gut bacteria in honey bees
+Purpose of this script: This script quantifies how different bacterial colonizers affect honey bee gut immune gene expression using qRT-PCR. We mono-associated microbiota-depleted (MD) bees with 25 of the 56 strains—chosen for achieving ≥10^6 cells per gut and covering all four ecological categories—and measured expression of seven immune-related genes (Apidaecin1, Abaecin, Defensin1, Defensin2, Hymenoptaecin, IRP30, Lysozyme) 7 days post-colonization. Gene expression is evaluated relative to MD controls.
+
+
+## Prepare files and export CT values
+qPCR results extracted in CSV, with information header removed. Sample name corresponds to plate position on DNA extraction plate.
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(data.table)
+library(tidyverse)
+library(beeswarm)
+library(ggplot2)
+library(ggbeeswarm)
+library(magrittr)
+library(ggpubr)
+library(tibble)
+library(scales)
+
+#Project folders 
+data_dir <- here::here("data", "qrtpcr")
+meta_dir <- here::here("data", "metadata")
+out_dir <- here::here("output")
+fig_dir <- file.path(out_dir, "figures")
+tab_dir <- file.path(out_dir, "tables")
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(tab_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+# Input rawdata
+```{r}
+
+file_paths <- list.files(
+  path = file.path(data_dir, "rawdata"),
+  pattern = "_Results.csv",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Read and combine the data from each file
+combined_data <- do.call(rbind, lapply(file_paths, read.csv))
+
+
+# Print the combined dataframe
+print(combined_data)
+
+#
+str(combined_data)
+combined_data$CT = as.numeric(as.character(combined_data$CT))
+str(combined_data)
+
+
+allCt= combined_data
+allCt$CT <- as.numeric(allCt$CT) # replate "Undertermine with NA
+dim(allCt)
+
+metadata= allCt[c(4, 5,6)]
+dim(metadata)
+metadata <- metadata[!duplicated(metadata$Sample.Name), ]
+dim(metadata)
+
+write.csv(
+  allCt,
+  file = file.path(tab_dir, "01_qPCR_rawdata.csv"),
+  row.names = FALSE
+)
+
+# Change all NA from no amplification into 40. 
+allCt$CT[is.na(allCt$CT)] <- 40
+allCt$CT[is.na(allCt$Ct.SD)] <- 1
+allCt <- allCt %>%
+  mutate(CT = ifelse(CT == "Undetermined", 40, CT))
+allCt <- allCt %>%
+  mutate(Ct.SD = ifelse(Ct.SD == "Undetermined", 1, CT))
+
+
+```
+
+
+```{r}
+
+t.m <- aggregate(CT ~ Sample.Name + Target.Name, data = allCt, mean, na.action = na.omit )# calculate means, if NA present in triplicate it still calculate mean from other values in triplicate 
+t.sd <- aggregate(Ct.SD ~ Sample.Name + Target.Name, data = allCt, sd, na.action = na.omit)
+t <- merge(t.m, t.sd, by=c("Sample.Name","Target.Name")) # merge Ct and SD values...
+names(t)[1:4] <- c("Sample.Name","Target","CT","SD")
+my_ct=  merge(t, metadata, by= "Sample.Name", all=T)
+
+dim(my_ct)
+
+write.csv(
+  my_ct,
+  file = file.path(plot_dir, "02_rawdata-averages.csv"),
+  row.names = FALSE
+)
+```
+
+
+#Merge data
+```{r}
+cts=my_ct
+cts$X <- NULL
+my_ct$Target
+# rename levels of factor Target for better work
+cts$Target <- as.factor(cts$Target)
+levels(cts$Target)
+  levels(cts$Target)[levels(cts$Target)=="Abaecin"] <- "Abaecin"
+  levels(cts$Target)[levels(cts$Target)=="Apidaecin1"] <- "Apidaecin1"
+  levels(cts$Target)[levels(cts$Target)=="Defensin-2"] <- "Defensin2"
+  levels(cts$Target)[levels(cts$Target)=="Denfensin-1"] <- "Defensin1"
+  levels(cts$Target)[levels(cts$Target)=="Hymenoptaecin"] <- "Hymenoptaecin"
+  levels(cts$Target)[levels(cts$Target)=="IRP30"] <- "IRP30"
+  levels(cts$Target)[levels(cts$Target)=="Lysozyme"] <- "Lysozyme"
+  levels(cts$Target)[levels(cts$Target)=="RPS18"] <- "RPS18"
+  
+  levels(cts$Target)
+# turn remained SD values to NA if Ct = NA
+cts$SD[is.na(cts$Ct)] <- NA
+
+# check proportion of not qualite data
+poor <- cts[cts$SD > 0.7 & cts$Ct < 30,]
+poor <- poor[!is.na(poor$Ct),]
+a = nrow(poor)
+b = nrow(cts)
+(a/b)*100 # 0 % of data can be doubtful :-D
+
+# Change all NA from no amplification into 40. 
+cts$CT[is.na(cts$CT)] <- 40
+
+```
+```{r}
+Abaecin= cts[cts$Target=="Abaecin",]
+colnames(Abaecin)[which(names(Abaecin) == "CT")] <- "CT_Abaecin" 
+colnames(Abaecin)[which(names(Abaecin) == "SD")] <- "SD_Abaecin" 
+Abaecin <- Abaecin[complete.cases(Abaecin), ] # remove last rows created with NAs
+
+Apidaecin1= cts[cts$Target=="Apidaecin1",]
+colnames(Apidaecin1)[which(names(Apidaecin1) == "CT")] <- "CT_Apidaecin1" 
+colnames(Apidaecin1)[which(names(Apidaecin1) == "SD")] <- "SD_Apidaecin1" 
+Apidaecin1 <- Apidaecin1[complete.cases(Apidaecin1), ] # remove last rows created with NAs
+
+Defensin2= cts[cts$Target=="Defensin2",]
+colnames(Defensin2)[which(names(Defensin2) == "CT")] <- "CT_Defensin2" 
+colnames(Defensin2)[which(names(Defensin2) == "SD")] <- "SD_Defensin2" 
+Defensin2 <- Defensin2[complete.cases(Defensin2), ] # remove last rows created with NAs
+
+Defensin1= cts[cts$Target=="Defensin1",]
+colnames(Defensin1)[which(names(Defensin1) == "CT")] <- "CT_Defensin1" 
+colnames(Defensin1)[which(names(Defensin1) == "SD")] <- "SD_Defensin1" 
+Defensin1 <- Defensin1[complete.cases(Defensin1), ] # remove last rows created with NAs
+
+Hymenoptaecin= cts[cts$Target=="Hymenoptaecin",]
+colnames(Hymenoptaecin)[which(names(Hymenoptaecin) == "CT")] <- "CT_Hymenoptaecin" 
+colnames(Hymenoptaecin)[which(names(Hymenoptaecin) == "SD")] <- "SD_Hymenoptaecin" 
+Hymenoptaecin <- Hymenoptaecin[complete.cases(Hymenoptaecin), ] # remove last rows created with NAs
+
+IRP30= cts[cts$Target=="IRP30",]
+colnames(IRP30)[which(names(IRP30) == "CT")] <- "CT_IRP30" 
+colnames(IRP30)[which(names(IRP30) == "SD")] <- "SD_IRP30" 
+IRP30 <- IRP30[complete.cases(IRP30), ] # remove last rows created with NAs
+
+Lysozyme= cts[cts$Target=="Lysozyme",]
+colnames(Lysozyme)[which(names(Lysozyme) == "CT")] <- "CT_Lysozyme" 
+colnames(Lysozyme)[which(names(Lysozyme) == "SD")] <- "SD_Lysozyme" 
+Lysozyme <- Lysozyme[complete.cases(Lysozyme), ] # remove last rows created with NAs
+
+RPS18= cts[cts$Target=="RPS18",]
+colnames(RPS18)[which(names(RPS18) == "CT")] <- "CT_RPS18" 
+colnames(RPS18)[which(names(RPS18) == "SD")] <- "SD_RPS18" 
+RPS18 <- RPS18[complete.cases(RPS18), ] # remove last rows created with NAs
+
+
+water=cts[cts$Group == "water",]
+colnames(water)[which(names(water) == "CT")] <- "CT_water" 
+colnames(water)[which(names(water) == "SD")] <- "SD_water" 
+
+positive=cts[cts$Group == "positive",]
+colnames(positive)[which(names(positive) == "CT")] <- "CT_positive" 
+colnames(positive)[which(names(positive) == "SD")] <- "SD_positive" 
+
+RTnegative=cts[cts$Group == "RT_negative",]
+colnames(RTnegative)[which(names(RTnegative) == "CT")] <- "CT_RT_negative" 
+colnames(RTnegative)[which(names(RTnegative) == "SD")] <- "SD_RT_negative" 
+
+
+waters= water[,c(1,2,3)]
+positive= positive[,c(1,2,3)]
+RTnegative=RTnegative[,c(1,2,3)]
+Apidaecin1=Apidaecin1[,c(1,3)]
+Defensin2=Defensin2[,c(1,3)]
+Defensin1=Defensin1[,c(1,3)]
+Hymenoptaecin=Hymenoptaecin[,c(1,3)]
+IRP30=IRP30[,c(1,3)]
+Lysozyme=Lysozyme[,c(1,3)]
+RPS18=RPS18[,c(1,3)]
+Abaecin=Abaecin[,c(1,3,5,6)]
+
+#put all data frames into list
+df_list <- list(Abaecin, Apidaecin1, Defensin2, Defensin1, Hymenoptaecin,IRP30,  Lysozyme, RPS18)
+control_list=list(RTnegative, waters)
+
+#merge all data frames in list
+
+all = df_list %>% reduce(full_join, by='Sample.Name')
+all <- all[!is.na(all$Sample.Name), ] # remove NAs created
+all
+
+
+```
+###Analysis qPCR
+
+#Clean data
+```{r}
+all2=all
+dim(all2)
+## Filter samples were DNA extraction did not work well (when Ct> 29 in RPS18)
+all2 <- all2[!all2$CT_RPS18 >29,] # remove samples with RPS18 >28, except of blanks
+#all2 <- rbind(all2,RT_negative)
+dim(all2)
+all2=all2 %>% drop_na(CT_RPS18) # remove samples with no amplification (NA) in control gene. 
+
+#Set RTnegative threshold for each gene. 
+
+# Calculate average and minimum CT for each target in the RT negative control 
+result_summary <- RTnegative %>%
+  group_by(Target) %>%
+  summarise(
+    Average_CT_RT_negative = mean(CT_RT_negative, na.rm = TRUE),
+    Minimum_CT_RT_negative = min(CT_RT_negative, na.rm = TRUE)
+  )
+
+# Print the result
+print(result_summary)
+
+# Now we consider that the real RNA signal should be at least 1 cycle apart from the negative control.Otherwise is consider as under our limit of detection and CT is changed to the water threshold, 40. 
+
+# Function to update CT values based on the threshold
+update_CT_values <- function(target_name, ct_values, threshold_values) {
+  target_index <- which(result_summary$Target == target_name)
+  threshold <- threshold_values[target_index]
+  ct_values[(threshold - ct_values) < 1] <- 40
+  return(ct_values)
+}
+
+# Create a new dataframe with updated CT values
+all2_filtered <- data.frame(Sample.Name = all2$Sample.Name, Strain=all2$Strain, Group=all2$Group)
+
+# Loop through CT columns and update values in the new dataframe
+ct_columns <- grep("^CT_", colnames(all2), value = TRUE)
+
+for (ct_column in ct_columns) {
+  updated_values <- update_CT_values(substring(ct_column, 4), all2[[ct_column]], result_summary$Average_CT_RT_negative)
+  all2_filtered[[ct_column]] <- updated_values
+}
+
+# Print the updated dataframe
+print(all2_filtered)
+```
+
+```{r}
+
+#apidaecin1, E=1.937, I=43.98
+#defensin, E=1.918, I=37.69
+#lysozyme, E=1.806, I=38.77
+#abaecin, E=1.92, I=36.81
+#hymenoptaecin, E=1.854, I=37.19
+#RPS18, E=1.983, I=43.59
+
+
+dt=all2_filtered
+
+dt$dCtapidaecin1 <- 1.937^-(dt$CT_Apidaecin1- dt$CT_RPS18)
+dt$dCtAbaecin <- 1.92^-(dt$CT_Abaecin- dt$CT_RPS18)
+dt$dCtDefensin2 <- 2^-(dt$CT_Defensin2- dt$CT_RPS18)
+dt$dCtDefensin1 <- 1.937^-(dt$CT_Defensin1- dt$CT_RPS18)
+dt$dCtHymenoptaecin <- 1.854^-(dt$CT_Hymenoptaecin- dt$CT_RPS18)
+dt$dCtIRP30 <- 2^-(dt$CT_IRP30- dt$CT_RPS18)
+dt$dCtLysozyme <- 1.806^-(dt$CT_Lysozyme- dt$CT_RPS18)
+
+
+# calculate threshold of detection
+RPS18_average <- mean(dt$CT_RPS18) # get average  Ct, 21.56108
+
+
+#2–∆∆Ct method. Using MD samples as calibrators
+
+# First calculate averages of CT values of each gene in MD samples. Grab MD values from plate 2
+MD_average_apidaecin= mean(dt$CT_Apidaecin1[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_Abaecin= mean(dt$CT_Abaecin[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_Defensin2= mean(dt$CT_Defensin2[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_Defensin1= mean(dt$CT_Defensin1[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_Hymenoptaecin= mean(dt$CT_Hymenoptaecin[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_IRP30= mean(dt$CT_IRP30[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_Lysozyme= mean(dt$CT_Lysozyme[dt$Strain == "MD"], na.rm = TRUE)
+MD_average_RPS18= mean(dt$CT_RPS18[dt$Strain == "MD"], na.rm = TRUE)
+
+#Calulate ddct and set efficiency values to get the fold of gene expression. Normalized expression to MD. 
+dt$ddCtapidaecin1 <- 1.937^-((dt$CT_Apidaecin1- dt$CT_RPS18) - (MD_average_apidaecin-MD_average_RPS18))
+dt$ddCtAbaecin <- 1.92^-((dt$CT_Abaecin- dt$CT_RPS18)-(MD_average_Abaecin-MD_average_RPS18))
+dt$ddCtDefensin2 <- 2^-((dt$CT_Defensin2- dt$CT_RPS18)-(MD_average_Defensin2-MD_average_RPS18))
+dt$ddCtDefensin1 <- 1.937^-((dt$CT_Defensin1- dt$CT_RPS18)-(MD_average_Defensin1-MD_average_RPS18))
+dt$ddCtHymenoptaecin <- 1.854^-((dt$CT_Hymenoptaecin- dt$CT_RPS18)-(MD_average_Hymenoptaecin-MD_average_RPS18))
+dt$ddCtIRP30 <- 2^-((dt$CT_IRP30- dt$CT_RPS18)-(MD_average_IRP30-MD_average_RPS18))
+dt$ddCtLysozyme <- 1.806^-((dt$CT_Lysozyme- dt$CT_RPS18)-(MD_average_Lysozyme-MD_average_RPS18))
+
+dtwater_threshold <- 2^-((40-RPS18_average))# threshold
+ddtwater_threshold <- 2^-((40-RPS18_average)-(40-MD_average_RPS18))# threshold
+
+
+# Fisrt calculate averages of CT values of each gene in SC samples. Grab SC values and excluded non expressed values (CT=40)
+SC_average_apidaecin <- mean(dt$CT_Apidaecin1[dt$Strain == "SC" & dt$CT_Apidaecin1 != 40], na.rm = TRUE)
+SC_average_Abaecin= mean(dt$CT_Abaecin[dt$Strain == "SC"& dt$CT_Abaecin != 40], na.rm = TRUE)
+SC_average_Defensin2= mean(dt$CT_Defensin2[dt$Strain == "SC"& dt$CT_Defensin2 != 40], na.rm = TRUE)
+SC_average_Defensin1= mean(dt$CT_Defensin1[dt$Strain == "SC"& dt$CT_Defensin1 != 40], na.rm = TRUE)
+SC_average_Hymenoptaecin= mean(dt$CT_Hymenoptaecin[dt$Strain == "SC"& dt$CT_Hymenoptaecin != 40], na.rm = TRUE)
+SC_average_IRP30= mean(dt$CT_IRP30[dt$Strain == "SC"& dt$CT_IRP30 != 40], na.rm = TRUE)
+SC_average_Lysozyme= mean(dt$CT_Lysozyme[dt$Strain == "SC"& dt$CT_Lysozyme != 40], na.rm = TRUE)
+SC_average_RPS18= mean(dt$CT_RPS18[dt$Strain == "SC"& dt$CT_RPS18 != 40], na.rm = TRUE)
+
+#Calulate ddct and set efficiency values to get the fold of gene expression
+#dt$ddCtapidaecin1 <- 1.937^-((dt$CT_Apidaecin1- dt$CT_RPS18) - (SC_average_apidaecin-SC_average_RPS18))
+#dt$ddCtAbaecin <- 1.92^-((dt$CT_Abaecin- dt$CT_RPS18)-(SC_average_Abaecin-SC_average_RPS18))
+#dt$ddCtDefensin2 <- 2^-((dt$CT_Defensin2- dt$CT_RPS18)-(SC_average_Defensin2-SC_average_RPS18))
+#dt$ddCtDefensin1 <- 1.937^-((dt$CT_Defensin1- dt$CT_RPS18)-(SC_average_Defensin1-SC_average_RPS18))
+#dt$ddCtHymenoptaecin <- 1.854^-((dt$CT_Hymenoptaecin- dt$CT_RPS18)-(SC_average_Hymenoptaecin-SC_average_RPS18))
+#dt$ddCtIRP30 <- 2^-((dt$CT_IRP30- dt$CT_RPS18)-(SC_average_IRP30-SC_average_RPS18))
+#dt$ddCtLysozyme <- 1.806^-((dt$CT_Lysozyme- dt$CT_RPS18)-(SC_average_Lysozyme-SC_average_RPS18))
+
+
+### Add Category column to the dataframe
+
+dt <- dt[!(dt$Group == "RT_negative" | dt$Group == "positive" ) , ] #remove controls
+dt <- dt[!(dt$Strain == "positive") , ] #remove controls
+
+#nat <- subset(dt, Group == "Native" )
+
+# Set the "Category" column based on the Strain
+dt$Category <- case_when(
+  dt$Strain %in% c("ESL0693", "ESL1042", "ESL1044", "ESL0254", "ESL0404", "ESL0230") ~ "Other bee species",
+  dt$Strain %in% c("BBC0329", "ESL0497", "ESL0943", "ESL0165", "ESL0947", "ESL0935") ~ "Opportunistic colonizers",
+  dt$Strain %in% c("ESL0607", "KB1", "ESL1027") ~ "Other microbiomes",
+  dt$Strain %in% c("ESL0145", "ESL0169", "ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0294", "ESL0034") ~ "Native",
+  dt$Strain == "SC" ~ "Native community",
+  TRUE ~ "Microbiota depleted"
+)
+
+# Print the updated data frame
+
+print(dt)
+
+
+dt <- dt[complete.cases(dt), ] # remove last rows created with NAs
+
+## EXPORT dataset
+write.csv(
+  dt,
+  file = file.path(plot_dir, "03_Data_qPCR_ddt_normtoMD.csv"),
+  row.names = FALSE
+)
+
+print(dt)
+
+
+
+# Prepare data to plot 
+  dt$Strain <- as.factor(dt$Strain)
+  dt$Group <- as.factor(dt$Group)
+  dt$Category <- as.factor(dt$Category)
+   
+  levels(dt$Group)
+  levels(dt$Category)
+  levels(dt$Strain)
+  
+# Add information about colonization_mode
+  
+  #dt$Colonization_mode <- ifelse(dt$Group == "MD", "MD",
+                              # ifelse(dt$Group == "SC", "SC",
+                                     # ifelse(dt$Group %in% c("Native", "Invader"), "Monocolonization", NA)))
+
+   dt$Colonization_mode <- ifelse(dt$Group %in% c("MD", "SC"), "Controls",
+                              ifelse(dt$Group %in% c("Native", "Invader"), "Monocolonization", NA))
+
+  
+```
+
+######
+# Compared to MD
+######
+
+##Apidaecin1
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+#order to have MD first for comparisons
+
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtapidaecin1, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+# extract SC pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD"]
+
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+adjusted_p_values
+
+
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtapidaecin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+           # aes(x = group2, y = max(dt$ddCtapidaecin1) * 1, label = label), 
+            #vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Apidaecin1") +
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free')
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Apidaecin1_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "04_Apidaecin1_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtapidaecin1, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", "ns"))))
+)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtapidaecin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+            #aes(x = group2, y = max(dt$dCtapidaecin1) * 1.1, label = label), 
+           #vjust = -0.1, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Apidaecin1") +
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free')
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Apidaecin1_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "04_Apidaecin1_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+
+```{r}
+
+### Plot by colonization mode 
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Colonization_mode <- factor(dt$Colonization_mode, levels = c("Controls", "Monocolonization"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtapidaecin1, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$dCtapidaecin1, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtapidaecin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white", "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66','chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Apidaecin1") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "Apidaecin1_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "04_Apidaecin1_relative_expressionto_bycategory_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+##Abaecin
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtAbaecin, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+#### Plot
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtAbaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+            #aes(x = group2, y = max(dt$ddCtAbaecin) * 1.1, label = label), 
+           # vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Abaecin") +
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Abaecin_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "05_Abaecin_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtAbaecin, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtAbaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+   #         aes(x = group2, y = max(dt$dCtAbaecin) * 1.1, label = label), 
+    #        vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Abaecin") +
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Abaecin_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "05_Abaecin_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtAbaecin, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtAbaecin, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Native", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtAbaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35", "grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35", 'grey66','chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Abaecin") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "Abaecin_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "05_Abaecin_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+##Defensin2
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtDefensin2, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtDefensin2)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+       #     aes(x = group2, y = max(dt$ddCtAbaecin) * 1.1, label = label), 
+       #     vjust = -27.0, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Defensin 2") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+significant_labels
+ggsave(
+  filename  = file.path(plot_dir, "Defensin2_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "06_Defensin2_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtDefensin2, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtDefensin2)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+ # geom_text(data = labels_combined, 
+          #  aes(x = group2, y = max(dt$dCtAbaecin) * 1.1, label = label), 
+           # vjust = -0.05, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Defensin 2") + 
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+significant_labels
+ggsave(
+  filename  = file.path(plot_dir, "Defensin2_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "06_Defensin2_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtDefensin2, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_SC=subset(dt, Group=="SC")
+dt_mono= rbind(dt_mono,dt_MD, dt_SC)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtDefensin2, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+dt_controls= rbind(dt_MD, dt_SC)
+pairwise_result_mono <- pairwise.wilcox.test(dt_controls$ddCtDefensin2, dt_controls$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values2 <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values2
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtDefensin2)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35",'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Defensin 2") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "Defensin2_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "06_Defensin2_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+##Defensin1
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtDefensin1, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtDefensin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+            #aes(x = group2, y = max(dt$ddCtAbaecin) * 1.1, label = label), 
+           # vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+ scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Defensin 1") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Defensin1_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "07_Defensin1_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtDefensin1, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtDefensin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+           # aes(x = group2, y = max(dt$dCtAbaecin) * 1.1, label = label), 
+           # vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Defensin 1") + 
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Defensin1_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "07_Defensin1_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtDefensin1, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtDefensin1, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtDefensin1)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35",'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Defensin 1") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "07_Defensin1_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+
+##Hymenoptaecin
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtHymenoptaecin, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtHymenoptaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+           # aes(x = group2, y = max(dt$ddCtHymenoptaecin) * 1.1, label = label), 
+           # vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Hymenoptaecin") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Hymenoptaecin_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "08_Hymenoptaecin_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtHymenoptaecin, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtHymenoptaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+           # aes(x = group2, y = max(dt$dCtHymenoptaecin) * 1.1, label = label), 
+            #vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+ ggtitle("Hymenoptaecin") + 
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Hymenoptaecin_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "08_Hymenoptaecin_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtHymenoptaecin, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtHymenoptaecin, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtHymenoptaecin)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35",'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Hymenoptaecin") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "Hymenoptaecin_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "08_Hymenoptaecin_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+
+
+##IRP30
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtIRP30, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtIRP30)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+      #      aes(x = group2, y = max(dt$ddCtIRP30) * 1.1, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("IRP30") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "IRP30_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "09_IRP30_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtIRP30, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtIRP30)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+           # aes(x = group2, y = max(dt$dCtIRP30) * 1.1, label = label), 
+           # vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("IRP30") + 
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "IRP30_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "09_IRP30_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtIRP30, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtIRP30, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtIRP30)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35",'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("IRP30") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "IRP30_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "09_IRP30_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+
+
+##Lysozyme
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtLysozyme, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = ddCtLysozyme)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+      #      aes(x = group2, y = max(dt$ddCtLysozyme) * 1.1, label = label), 
+     #       vjust = -0.2, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Lysozyme") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Lysozyme_relative_expressiontoMD.pdf"),
+  plot      = reln,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "10Lysozyme_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+
+
+
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$dCtLysozyme, dt$Strain, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+# extract MD pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for MD comparisons
+md_comparisons_pvalues <- pairwise_result$p.value[,"MD" ]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(md_comparisons_pvalues, method = "fdr")
+str(adjusted_p_values)
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("Microbiota depleted", length(md_comparisons_pvalues)),
+  group2 = names(md_comparisons_pvalues),
+  Adjusted_P_Value = as.numeric(md_comparisons_pvalues),
+  label = ifelse(md_comparisons_pvalues <= 0.0001, "****",
+                 ifelse(md_comparisons_pvalues <= 0.001, "***",
+                        ifelse(md_comparisons_pvalues <= 0.01, "**",
+                               ifelse(md_comparisons_pvalues <= 0.05, "*", ""))))
+)
+
+# Print the modified significant_labels
+print(significant_labels)
+
+
+#### Plot
+
+#### Plot
+# Order the levels of the 'x' variable
+dt$Group <- factor(dt$Group, levels = c("MD", "SC", "Native", "Invader"))
+# Create a custom order for the Category levels
+category_order <- c("Microbiota depleted", "Native community", "Native", "Other bee species", "Opportunistic colonizers", "Other microbiomes")
+strain_order= c("MD", "SC", "ESL0145","ESL0169", "ESL0034","ESL0183", "ESL0184", "ESL0185", "ESL0186", "ESL0197", "ESL0198", "ESL0404", "ESL0294", "ESL1042","ESL1044", "ESL0230", "ESL0693", "ESL0254", "ESL0497", "BBC0329", "ESL0943", "ESL0947", "ESL0935", "ESL0165", "ESL0607",   "ESL1027", "KB1")
+# Reorder the Category factor based on the custom order
+dt$Category <- factor(dt$Category, levels = category_order, ordered = TRUE)
+dt$Strain=factor(dt$Strain, levels = strain_order)
+
+
+# Add significant labels to the "SC" facet
+labels_SC <- subset(significant_labels, group1 == "MD" & group2 == "SC")
+labels_SC$Group <- rep("SC", nrow(labels_SC))
+
+labels_Invader <- subset(significant_labels, group1 == "MD" & group2 != "SC")
+labels_Invader$Group <- rep("Invader", nrow(labels_Invader))
+
+labels_Native <- subset(significant_labels, group1 == "MD" & group2 != "Native")
+labels_Native$Group <- rep("Native", nrow(labels_Native))
+
+# Combine the data frames and explicitly set the order
+labels_combined <- rbind(labels_SC, labels_Native, labels_Invader)
+labels_combined$Group <- factor(labels_combined$Group, levels = c("SC", "Native", "Invader"))
+
+# Add labels to the plot using geom_text
+reln <- ggplot(dt, aes(x = Strain, y = dCtLysozyme)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = labels_combined, 
+   #         aes(x = group2, y = max(dt$dCtLysozyme) * 1.1, label = label), 
+   #         vjust = -0.2, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white", "gray35", 'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+  ggtitle("Lysozyme") + 
+  ylab("Relative expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_grid(.~ Group, scales = 'free', space = 'free') 
+
+# Print the plot
+print(reln)
+
+ggsave(
+  filename  = file.path(plot_dir, "Lysozyme_normalized_expression.pdf"),
+  plot      = reln,
+  height    = 6,
+  width     = 8,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "10_Lysozyme_relative_expressionto_wilcox.csv"),
+  row.names = FALSE
+)
+```
+
+##Lysozyme
+```{r}
+
+#Get pvalues from pairwise comparisons. 
+# Perform pairwise Wilcoxon rank sum tests
+pairwise_result <- pairwise.wilcox.test(dt$ddCtLysozyme, dt$Category, p.adjust.method = "none", ref.group="MD", exact = FALSE)
+pairwise_result
+
+dt_mono=subset(dt, Colonization_mode=="Monocolonization")
+dt_MD=subset(dt, Group=="MD")
+dt_mono= rbind(dt_mono,dt_MD)
+pairwise_result_mono <- pairwise.wilcox.test(dt_mono$ddCtLysozyme, dt_mono$Category, p.adjust.method = "none", ref.group="Microbiota depleted", exact = FALSE)
+pairwise_result_mono
+# extract native pairwise comparisons and correct pvalues with fdr
+# Extracting the p-values for native comparisons
+native_comparisons_pvalues <- pairwise_result_mono$p.value[,"Microbiota depleted"]
+# Extract p-values and adjust for multiple testing
+adjusted_p_values <- p.adjust(native_comparisons_pvalues, method = "fdr")
+adjusted_p_values
+
+# Create a data frame for significant labels
+significant_labels <- data.frame(
+  group1 = rep("MD", length(adjusted_p_values)),
+  group2 = names(adjusted_p_values),
+  Adjusted_P_Value = as.numeric(adjusted_p_values),
+  label = ifelse(adjusted_p_values <= 0.0001, "****",
+                 ifelse(adjusted_p_values <= 0.001, "***",
+                        ifelse(adjusted_p_values <= 0.01, "**",
+                               ifelse(adjusted_p_values <= 0.05, "*", ""))))
+)
+
+#plot
+reln2 <- ggplot(dt, aes(x = Category, y = ddCtLysozyme)) + 
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = Category, fill = Category), position = position_beeswarm(), cex = 2, shape = 21, stroke = 0.5, color = "black") +  # Add black border to data points
+  #geom_text(data = significant_labels, 
+     #       aes(x = group2, y = max(dt$ddCtapidaecin1) * 0.5, label = label), 
+     #       vjust = -0.5, hjust = 0.5, size = 4) +
+  scale_x_discrete() + 
+  scale_y_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x))) +
+  theme_bw() +
+  scale_color_manual(values = c("white",  "gray35","grey66",'chocolate2', 'deepskyblue3', 'green4'), name = "Category") +  # colors
+  scale_fill_manual(values = c("white",  "gray35",'grey66', 'chocolate2', 'deepskyblue3', 'green4')) +  # fill colors
+   ggtitle("Lysozyme") + 
+  ylab("Fold-change expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank(), strip.text = element_text(face="bold", size=10), legend.position = "none" ) + facet_grid(.~Colonization_mode,  scales = 'free', space = 'free')
+ 
+# Print the plot
+print(reln2)
+
+ggsave(
+  filename  = file.path(plot_dir, "Lysozyme_by_Category_relative_expressiontoMD_splited_colmode.pdf"),
+  plot      = reln2,
+  height    = 3.5,
+  width     = 3,
+  limitsize = FALSE
+)
+
+write.csv(
+  significant_labels,
+  file = file.path(plot_dir, "10_Lysozyme_by_Category_relative_expressiontoMD_wilcox.csv"),
+  row.names = FALSE
+)
+
+```
+## Calculate median of the relative expression 
+```{r, height=3,width=10}
+
+# first pivot the data frame
+# subset only the columns for relative expression: dCT (not normalized to MD)
+
+dt_dCT <- dt[, c("Sample.Name", "Strain", "Group", "Category", "dCtapidaecin1", "dCtAbaecin", "dCtDefensin2", "dCtDefensin1", "dCtHymenoptaecin", "dCtIRP30", "dCtLysozyme" )]
+dt_ddCT <- dt[, c("Sample.Name", "Strain", "Group", "Category", "ddCtapidaecin1", "ddCtAbaecin", "ddCtDefensin2", "ddCtDefensin1", "ddCtHymenoptaecin", "ddCtIRP30", "ddCtLysozyme" )] # subset nomralized to MD
+
+dt_dCT_long <- pivot_longer(dt_dCT, 
+                        cols = -c(Sample.Name, Strain, Group, Category), 
+                        names_to = "Peptide",
+                        values_to = "Relative_expression_dCT")
+
+
+dt_ddCT_long <- pivot_longer(dt_ddCT, 
+                        cols = -c(Sample.Name, Strain, Group, Category), 
+                        names_to = "Peptide",
+                        values_to = "Normalized_Relative_expression_ddCT")
+
+# Calculate median 
+median_dct= dt_dCT_long %>% group_by(Strain, Category,Peptide ) %>% summarize(median_Relative_expression_dCT = median(Relative_expression_dCT, na.rm = TRUE))
+median_dct
+
+median_ddct= dt_ddCT_long %>% group_by(Strain, Category,Peptide ) %>% summarize(median_Normalized_Relative_expression_ddCT = median(Normalized_Relative_expression_ddCT, na.rm = TRUE))
+median_ddct
+
+
+# Get median abundance data
+myloadcategories <- read.csv(
+  file.path(here::here("data"), "qPCR", "plot_qPCR", "10_qPCR_median_abundances_in_mono_byLoadCategory.csv"),
+  sep = ",",
+  header = TRUE
+)
+
+names(myloadcategories)[5] <- "Median_Abundance"
+
+#from controls 
+control <- read.csv(
+  file.path(here::here("data"), "qPCR", "plot_qPCR", "5.2_Data_qPCR_CopyNum_CONTROLS.csv"),
+  sep = ",",
+  header = TRUE
+)
+# calculate median abundance from controls. 
+median_control= control %>% group_by(Strain, Category,Group ) %>% summarize(median_Univ_CopyNum_norm_GE = median(Univ_CopyNum_norm_GE, na.rm = TRUE))
+median_control
+names(median_control)[4] <- "Median_Abundance"
+#Add load category column
+median_control$Load_category <- ifelse(median_control$Strain == "MD", "No colonization", 
+                            ifelse(median_control$Strain == "SC", "High colonization", NA))
+#combine with remaining abuncance data
+myloadcategories <- myloadcategories[, -1]
+median_abundace= rbind(myloadcategories, median_control)
+
+
+#add pct of colonization
+pct_colonization <- read.csv(
+  file.path(
+    here::here("data"),
+    "qPCR",
+    "plot_qPCR",
+    "06_qPCR_only_median_abundances_pct_colonization_filteredbyinoculum.csv"
+  ),
+  sep = ",",
+  header = TRUE
+)
+pct_colonization = subset(pct_colonization, Colonization_mode=="Mono")
+ # clean colums needed
+pct_colonization <- pct_colonization[, c("Strain", "pct_nonzero")]
+ 
+median_abundace_pct= merge(median_abundace,pct_colonization, by= "Strain", all.x=TRUE)
+
+#median_abundace_pct$pct_colonization[median_abundace_pct$Load_category == "No colonization"] <- 0 # Does not work. Save it and fix it in excel. 
+write.csv(
+  median_abundace_pct,
+  file = file.path(plot_dir, "Median_abundance_pct_colonization_including_controls.csv"),
+  row.names = FALSE
+)
+
+median_abundace_pct <- read.csv(
+  file.path(plot_dir, "Median_abundance_pct_colonization_including_controls.csv"),
+  sep = ",",
+  header = TRUE
+)
+                                            
+# Add to abundance data control information. 
+
+# Merge with median abundance data 
+
+combo_dct= merge(median_dct, median_abundace, by = c("Strain"), all.x = TRUE)
+combo_ddct= merge(median_ddct, median_abundace, by = c("Strain"), all.x = TRUE)
+
+combo_dct_pct= merge(median_dct, median_abundace_pct, by = c("Strain"), all.x = TRUE)
+combo_ddct_pct= merge(median_ddct, median_abundace_pct, by = c("Strain"), all.x = TRUE)
+
+  
+  
+# Plot by abundace vs rel expression 
+#remove No colonization 
+
+combo_ddct=subset(combo_ddct, Load_category!= "No colonization")
+
+modu_abundance <- ggplot(combo_ddct, aes(x = median_Normalized_Relative_expression_ddCT, y = Median_Abundance)) +
+  geom_jitter(aes(colour = Categoryx, fill = Category.x), width = 0.1, stroke = 0.4, color = "black") +
+  scale_y_log10() +
+  labs(x = "Median_Relative_expression", y = "Median abundance") +
+  scale_fill_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4')) +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'))+
+  scale_shape_manual(values = c(1, 2, 3, 4)) +  # Define shape values manually
+  stat_cor(method = "spearman", label.x = 2e-11, label.y = 10, size = 2) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "black") +
+  theme_bw() +  
+  scale_x_continuous(trans = log2_trans(),
+                    breaks = trans_breaks("log2", function(x) 2^x),
+                    labels = trans_format("log2", math_format(2^.x))) +
+  theme(strip.background = element_rect(fill = "white"), strip.text = element_text(face = "bold", size = 10), legend.position = "right") +
+  facet_grid(~Load_category, scales="free")
+#
+modu_abundance
+
+
+ggsave(
+  filename  = file.path(plot_dir, "Peptide_Medianrelative_expression_vs_medianAbundance2.pdf"),
+  plot      = modu_abundance,
+  height    = 6,
+  width     = 20,
+  limitsize = FALSE
+)
+
+combo_ddct$Load_category <- factor(combo_ddct$Load_category, levels = c("Low colonization", "Medium colonization", "High colonization"))
+
+correlation_plot <- ggplot(combo_ddct, aes(x = median_Normalized_Relative_expression_ddCT, y = Median_Abundance)) +
+  geom_point(position=position_jitter(1), color="black", fill="lightgrey", shape=21, size=2) +  # Add points with specified color and fill
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +  # Add linear regression line without confidence interval
+  facet_grid(~Load_category, scales = "free") +  # Facet by Peptide
+  stat_cor(method = "spearman", size = 3) +
+  labs(x = "Median_Relative_expression", y = "Median Abundance") +  # Labels
+  theme_bw() +  
+  scale_x_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x)))
+
+correlation_plot
+
+correlation_plot2 <- ggplot(combo_ddct, aes(x = median_Normalized_Relative_expression_ddCT, y = Median_Abundance)) +
+  geom_point(position=position_jitter(1), color="black", fill="lightgrey", shape=21, size=2) +  # Add points with specified color and fill
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +  # Add linear regression line without confidence interval
+  #facet_grid(~Load_category, scales = "free") +  # Facet by Peptide
+  stat_cor(method = "spearman", size = 3) +
+  labs(x = "Median_Relative_expression", y = "Median Abundance") +  # Labels
+  theme_bw() +  
+  scale_x_continuous(trans = log2_trans(),
+                     breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x)))
+
+correlation_plot2
+
+
+
+ggsave(
+  filename  = file.path(plot_dir, "Median_abundance_vs_median_relative_expression_byload2.pdf"),
+  plot      = correlation_plot,
+  height    = 3,
+  width     = 5,
+  limitsize = FALSE
+)
+
+correlation_plot <- ggplot(combo_dct, aes(x = median_Relative_expression_dCT, y = Median_Abundance)) +
+  geom_point(position = position_jitter(width = 0.1), colour = "black", fill = "lightgrey", shape = 21,) +  # Add jittered points
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +  # Add linear regression line without confidence interval
+  facet_grid(~Peptide, scales = "free") +  # Facet by Load_category
+  stat_cor(method = "spearman", size = 3) +  # Add correlation labels
+  labs(x = "Median of Relative Expression", y = "Median Abundance") +  # Labels
+  theme_bw() +
+  scale_x_continuous(trans = log2_trans(), breaks = trans_breaks("log2", function(x) 2^x),
+                     labels = trans_format("log2", math_format(2^.x)))
+
+correlation_plot
+
+
+ggsave(
+  filename  = file.path(plot_dir, "Median_abundance_by_peptide_relative_expression2.pdf"),
+  plot      = correlation_plot,
+  height    = 3,
+  width     = 10,
+  limitsize = FALSE
+)
+```
+
+```{r}
+#combo_ddct <- combo_ddct[, !names(combo_ddct) %in% "Strain"]
+#combo_ddct <- combo_ddct[, !names(combo_ddct) %in% "Category.x"]
+#combo_ddct <- combo_ddct[, !names(combo_ddct) %in% "Load_category"]
+#combo_ddct <- combo_ddct[, !names(combo_ddct) %in% "Group"]
+
+
+#transform data
+combo_ddct_pct_t = combo_ddct_pct
+combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "Category.y"]
+combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "X"]
+combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "Strain"]
+combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "Group"]
+combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "median_Normalized_Relative_expression_ddCT"]
+#combo_ddct_pct_t <- combo_ddct_pct_t[, !names(combo_ddct_pct_t) %in% "Peptide"]
+
+# Define a function to transform values to log10 with pseudocounts
+transform_pseudo_log <- function(x, pseudo_count = 1) {
+  log10(x + pseudo_count)
+}
+# Apply the transformation to the 'Median_Abundance' column
+combo_ddct_pct_t <- combo_ddct_pct_t %>%
+  mutate(Median_Abundance = transform_pseudo_log(Median_Abundance))
+
+#combo_ddct_pct_t$median_Normalized_Relative_expression_ddCT <- log2(combo_ddct_pct_t$median_Normalized_Relative_expression_ddCT)
+
+
+
+
+# Selecting numerical columns
+#numerical_columns <- c("median_Normalized_Relative_expression_ddCT", "Median_Abundance", "pct_nonzero")
+numerical_columns <- c("Median_Abundance", "pct_nonzero")
+
+# Selecting categorical columns
+categorical_columns <- setdiff(names(combo_ddct_pct_t), numerical_columns)
+
+# Creating a matrix of numerical data
+
+numerical_data <- as.matrix(combo_ddct_pct_t[numerical_columns])
+
+# Performing MDS
+mds_result <- cmdscale(dist(numerical_data))
+
+# Creating a dataframe with MDS coordinates
+mds_df <- as.data.frame(mds_result)
+
+# Adding categorical columns to the MDS dataframe
+mds_df <- cbind(combo_ddct_pct_t[categorical_columns], mds_df)
+
+# Plotting MDS
+
+mds_plot <- ggplot(mds_df, aes(x = V1, y = V2, color = Category.x, shape = Load_category)) +
+  geom_point() +
+  labs(x = "MDS Dimension 1", y = "MDS Dimension 2", color = "Category.x", shape = "Load_category") +
+  theme_minimal() +scale_fill_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4')) +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'))
+
+mds_plot
+
+
+# Plotting MDS
+
+mds_plot <- ggplot(mds_df, aes(x = V1, y = V2, color = Category.x, shape = Load_category)) +
+  geom_point() +
+  labs(x = "MDS Dimension 1", y = "MDS Dimension 2", color = "Category.x", shape = "Load_category") +
+  theme_minimal() +scale_fill_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4')) +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'))+ facet_wrap(~Peptide~Load_category)
+
+mds_plot
+
+
+
+```
+
+```{r}
+library(MASS)
+combo_ddct_pct1= subset(combo_ddct_pct, Peptide=="ddCtAbaecin")
+ # clean colums needed
+combo_ddct_pct3 <- combo_ddct_pct[, c( "Category.x", "median_Normalized_Relative_expression_ddCT", "Median_Abundance", "pct_nonzero" )]
+# Define a function to transform values to log10 with pseudocounts
+transform_pseudo_log <- function(x, pseudo_count = 1) {
+  log10(x + pseudo_count)
+}
+
+# Apply the transformation to the 'Median_Abundance' column
+combo_ddct_pct3 <- combo_ddct_pct3 %>%
+  mutate(Median_Abundance = transform_pseudo_log(Median_Abundance))
+
+combo_ddct_pct3$median_Normalized_Relative_expression_ddCT <- log2(combo_ddct_pct3$median_Normalized_Relative_expression_ddCT)
+
+table(combo_ddct_pct3$median_Normalized_Relative_expression_ddCT, combo_ddct_pct3$Strain)
+
+
+combo_ddct_pct3[2:3] <- scale(combo_ddct_pct3[2:3])
+apply(combo_ddct_pct3[2:4], 2, mean)
+
+
+library(GGally)
+library(ggplot2)
+ggpairs(combo_ddct_pct3, aes(color = Category.x))+ theme_bw()
+
+
+
+install.packages("PerformanceAnalytics")
+library("PerformanceAnalytics")
+my_data <- combo_ddct_pct3[, c(1,3,4,5,6,7)]
+chart.Correlation(my_data, histogram=TRUE, pch=19)
+
+
+str(combo_ddct_pct2)
+library(MASS)
+library(car)
+scatterplotMatrix(combo_ddct_pct3[2:4])
+# Separate identity columns from numerical columns
+identity_columns <- combo_ddct_pct1[, 1:3]
+identity_columns <- combo_ddct_pct1[, 1:3]
+numerical_columns <- combo_ddct_pct1[, 4:6]
+# Perform Linear Discriminant Analysis (LDA)
+lda_model2 <- lda(Category.x ~ ., data = combo_ddct_pct3)
+
+# Plot the LDA results
+plot(lda_model2)
+
+lda_model2.values <- predict(lda_model2)
+plot(lda_model2.values$x[,1], lda_model2.values$x[,2])
+text(lda_model2.values$x[,1], lda_model2.values$x[,2], Load_category, cex = 0.7, pos = 4, col = "red")
+
+newdata <- data.frame(type = combo_ddct_pct3[,1], lda = lda_model2.values$x)
+library(ggplot2)
+ggplot(newdata) + geom_point(aes(lda.LD1, lda.LD2, colour = type), size = 2.5)+scale_fill_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4')) +
+  scale_color_manual(values = c("white","gray35", "grey66", 'chocolate2', 'deepskyblue3', 'green4'))
+
+
+# Exclude constant variables
+non_constant_columns <- sapply(combo_ddct_pct1[, c(numerical_columns, categorical_columns)], function(x) length(unique(x)) > 1)
+selected_columns <- c(numerical_columns, categorical_columns)[non_constant_columns]
+
+# Perform Linear Discriminant Analysis (LDA)
+lda_model <- lda(Strain~., data = combo_ddct_pct1[, selected_columns])
+
+# Plot the Discriminant Analysis
+plot(lda_model)
+
+
+
+# Close the PDF device
+dev.off()
+
+
+
+```
