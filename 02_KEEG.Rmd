@@ -1,0 +1,925 @@
+---
+title: "Functional profiling"
+author: "Silvia Moriano-Gutierrez"
+date: "2024-02-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##################################
+## Project description
+##################################
+Project: Host and microbial factors influence gut bacteria in honey bees
+Purpose of this script: To investigate whether metabolic capacity underlies differences in colonization, we evaluated the completeness of KEGG functional modules across all bacterial strains. This script links genome-encoded metabolic capacity to in vivo colonization outcomes. It uses KEGG module completeness across strains to ask whether particular pathways are associated with (i) the percentage of colonized hosts and (ii) bacterial load/abundance in bees.
+
+
+#Load libraries
+```{r}
+library(ggplot2)
+library(readxl)
+library(RColorBrewer)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+library(tidyverse)
+library(tibble)
+library(colorRamp2)
+library(ggpubr)
+library(gplots)
+library(readr)
+library(purrr)
+library(lme4)
+library(ggrepel)
+library(stringr)
+library(lmerTest)
+library(grid)
+
+# Project directories 
+data_dir       <- here::here("data")
+qPCR_dir       <- file.path(data_dir, "qPCR", "plot_qPCR")
+func_dir       <- file.path(data_dir, "functional_profiling")
+config_dir     <- file.path(func_dir, "config")
+mod_dir        <- file.path(func_dir, "03_ModuleCompleteness")
+heat_dir_data  <- file.path(func_dir, "04_Heatmaps")
+
+out_dir        <- here::here("output")
+out_func       <- file.path(out_dir, "functional_profiling")
+out_mod        <- file.path(out_func, "03_ModuleCompleteness")
+out_heat       <- file.path(out_func, "04_Heatmaps")
+
+dir.create(out_dir,   recursive = TRUE, showWarnings = FALSE)
+dir.create(out_func,  recursive = TRUE, showWarnings = FALSE)
+dir.create(out_mod,   recursive = TRUE, showWarnings = FALSE)
+dir.create(out_heat,  recursive = TRUE, showWarnings = FALSE)
+```
+
+
+# read metadata
+```{r}
+#Genome data
+genome_data <- read.csv(file.path(config_dir, "genome_sources.csv")) |>
+dplyr::select(-Genome_ID)
+
+metadata <- read.csv(file.path(config_dir, "genomes_metadata.csv")) |>
+dplyr::left_join(genome_data |> dplyr::select(-source), by = c("Strain_ID"))
+
+mysuccess <- read.csv(
+file.path(qPCR_dir, "06_qPCR_only_median_abundances_pct_colonization_filteredbyinoculum.csv")
+)
+
+mysuccess_mono <- subset(mysuccess, Colonization_mode == "Mono")
+colnames(mysuccess_mono)[2] <- "Strain_ID"
+```
+
+# read module completeness
+```{r}
+df_completeness <- read.csv(
+file.path(mod_dir, "all_genomes_module_completeness.tab"),
+sep = "\t"
+) |>
+dplyr::mutate(name = abbreviate(name, 105))
+
+#convert to matrix: rows = modules, cols = strains
+
+mat_completeness <- df_completeness |>
+dplyr::select(!c(module, pathway.group)) |>
+column_to_rownames("name") |>
+as.matrix()
+
+#rename columns to match strain metadata
+
+spec_names <- colnames(mat_completeness) |>
+as.data.frame() |>
+dplyr::left_join(metadata, by = c("." = "Strain_ID")) |>
+dplyr::mutate(spec = paste0(Bacterial_species, " [", ., "]")) |>
+dplyr::pull(spec)
+
+colnames(mat_completeness) <- spec_names
+
+#remove empty rows
+
+mat_completeness <- mat_completeness[rowSums(mat_completeness) > 0, ]
+
+#store a copy that downstream code can read again
+
+write.csv(
+mat_completeness,
+file = file.path(out_mod, "completness.csv"),
+row.names = TRUE
+)
+```
+# Get colonization data
+```{r}
+kegg <- read.csv(
+file.path(out_mod, "completness.csv"),
+row.names = 1,
+check.names = FALSE,
+stringsAsFactors = FALSE
+)
+#colonization data across all conditions
+
+colon <- read.csv(
+file.path(qPCR_dir, "07_qPCR_median_abundances_pct_colonization_all_filteredbyinoculum.csv")
+)
+
+#transpose module data so each row is a strain
+
+kegg_t <- as.data.frame(t(kegg))
+kegg_t$Strain_full <- rownames(kegg_t)
+
+#summarise colonization to per-strain
+
+colon_strain <- colon |>
+dplyr::group_by(Strain) |>
+dplyr::summarise(
+pct_nonzero = mean(pct_nonzero, na.rm = TRUE),
+median_Specific_CopyNum_norm = mean(median_Specific_CopyNum_norm, na.rm = TRUE),
+Colonization_mode = dplyr::first(Colonization_mode),
+Category = dplyr::first(Category)
+)
+
+#merge colonization + KEGG-like data
+
+df <- dplyr::inner_join(colon_strain, kegg_t, by = c("Strain" = "Strain_full"))
+
+#figure out which columns are modules
+
+kegg_cols <- setdiff(
+names(df),
+c("Strain", "pct_nonzero", "median_Specific_CopyNum_norm",
+"Colonization_mode", "Category")
+)
+
+#log10 abundance for later
+
+df$log_median <- log10(df$median_Specific_CopyNum_norm + 1)
+
+```
+
+## Multivariate view: reduce KEGG to a few axes
+```{r}
+
+# build matrix and PCA
+kegg_mat <- df[, kegg_cols]
+kegg_mat[is.na(kegg_mat)] <- 0
+
+kegg_pca <- prcomp(kegg_mat, scale. = TRUE)
+
+# add first PCs
+df$PC1 <- kegg_pca$x[, 1]
+df$PC2 <- kegg_pca$x[, 2]
+df$PC3 <- kegg_pca$x[, 3]
+
+# variance explained
+var_explained <- kegg_pca$sdev^2 / sum(kegg_pca$sdev^2)
+
+# make nice axis labels with % variance
+pc1_lab <- paste0("PC1 (KEGG, ", round(var_explained[1] * 100, 1), "%)")
+pc2_lab <- paste0("PC2 (KEGG, ", round(var_explained[2] * 100, 1), "%)")
+pc3_lab <- paste0("PC3 (KEGG, ", round(var_explained[3] * 100, 1), "%)")
+
+# models
+m_colon <- lm(pct_nonzero ~ PC1 + PC2 + PC3 + Colonization_mode + Category, data = df)
+summary(m_colon)
+
+m_load <- lm(log_median ~ PC1 + PC2 + PC3 + Colonization_mode + Category, data = df)
+summary(m_load)
+
+# scree plot
+plot(var_explained[1:20],
+     type = "b",
+     xlab = "Principal Component",
+     ylab = "Proportion of variance explained",
+     main = "KEGG PCA scree plot")
+
+# colonization vs PC1
+ggplot(df, aes(x = PC1, y = pct_nonzero, color = Category)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x = pc1_lab,
+    y = "% colonized (pct_nonzero)",
+    title = "Colonization vs KEGG PC1"
+  ) +
+  theme_minimal()
+
+# abundance vs PC1
+ggplot(df, aes(x = PC1, y = median_Specific_CopyNum_norm, color = Category)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x = pc1_lab,
+    y = "Abundance",
+    title = "Abundance vs KEGG PC1"
+  ) +
+  scale_y_log10() +
+  theme_minimal() +
+  facet_wrap(~ Category)
+
+# PCA scatter coloured 
+PCA <- ggplot(
+df,
+aes(
+x = PC1,
+y = PC2,
+color = log10(median_Specific_CopyNum_norm + 1),
+shape = Category
+)
+) +
+geom_point(size = 3, alpha = 0.9) +
+scale_color_viridis_c(
+name = "log10(abundance + 1)",
+option = "D"
+) +
+scale_shape_discrete(name = "Category") +
+labs(
+x = pc1_lab,
+y = pc2_lab
+) +
+theme_bw(base_size = 10) +
+theme(
+plot.title = element_text(face = "bold"),
+plot.subtitle = element_text(color = "grey30"),
+panel.grid.minor = element_blank(),
+legend.position = "right"
+)
+
+PCA
+
+ggsave(
+"PCA_KEEG_abundance.pdf",
+PCA,
+width = 12,
+height = 8,
+dpi = 300,
+units = "cm",
+path = out_mod
+)
+
+ggsave(
+"PCA_KEEG_abundance_no_legend.pdf",
+PCA,
+width = 10,
+height = 8,
+dpi = 300,
+units = "cm",
+path = out_mod
+)
+
+ggsave(
+"PCA_KEEG_pct_colonization.pdf",
+PCA,
+width = 14,
+height = 9,
+dpi = 300,
+units = "cm",
+path = out_mod
+)
+```
+
+## Correct for taxonomy bias
+#Module-wise mixed models vs colonization
+#Test individual modules
+```{r}
+res_mod <- map_df(kegg_cols, function(mod) {
+  # build formula with backticked KEGG column name
+  f <- as.formula(
+    paste0("pct_nonzero ~ `", mod, "` + Category + Colonization_mode + (1 | genus)")
+  )
+
+  # fit model, but don't crash the whole loop if one fails
+  m <- tryCatch(lmer(f, data = df), error = function(e) NULL)
+
+  term <- paste0("`", mod, "`")
+
+  # model failed → return NAs
+  if (is.null(m)) {
+    return(tibble(
+      module = mod,
+      beta   = NA_real_,
+      p      = NA_real_,
+      model  = "fit_failed"
+    ))
+  }
+
+  co <- summary(m)$coefficients
+
+  # sometimes the predictor is not in the table (e.g. singular fit)
+  if (!term %in% rownames(co)) {
+    return(tibble(
+      module = mod,
+      beta   = NA_real_,
+      p      = NA_real_,
+      model  = "term_missing"
+    ))
+  }
+
+  beta <- co[term, "Estimate"]
+
+  # try to find a p-value column (exists if lmerTest is loaded)
+  pcol <- which(colnames(co) %in% c("Pr(>|t|)", "Pr(>F)"))
+  pval <- if (length(pcol) == 1) co[term, pcol] else NA_real_
+
+  tibble(
+    module = mod,
+    beta   = beta,
+    p      = pval,
+    model  = "ok"
+  )
+}) %>%
+  mutate(p_adj = p.adjust(p, method = "fdr")) %>%
+  arrange(p_adj)
+
+res_mod
+
+
+## plot list 
+res_mod_plot <- res_mod |>
+  mutate(
+    neglog10_fdr = -log10(p),
+    sig = !is.na(p) & p < 0.05   # change threshold if you like
+  )
+
+ggplot(res_mod_plot, aes(x = beta, y = neglog10_fdr, color = sig)) +
+  geom_point() +
+  geom_hline(yintercept = -log10(0.05), linetype = 2, linewidth = 0.4) +
+  scale_color_manual(values = c("FALSE" = "grey50", "TRUE" = "red")) +
+  labs(
+    x = "Effect of module on pct_nonzero",
+    y = "-log10(p-value)",
+    color = "pvalue < 0.05",
+    title = "Module-wise mixed models"
+  ) +
+  theme_minimal()
+top_hits <- res_mod_plot |>
+  arrange(p) |>
+  slice_head(n = 10)
+
+ggplot(res_mod_plot, aes(x = beta, y = neglog10_fdr, color = sig)) +
+  geom_point() +
+  geom_hline(yintercept = -log10(0.05), linetype = 2, linewidth = 0.4) +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = module),
+    max.overlaps = 20
+  ) +
+  scale_color_manual(values = c("FALSE" = "grey50", "TRUE" = "red")) +
+  labs(
+    x = "Effect of module on pct_nonzero",
+    y = "-log10(pvalue)",
+    color = "p < 0.05"
+  ) +
+  theme_minimal()
+
+# start from your results
+plot_dat <- res_mod_plot %>%
+  mutate(
+    label = if_else(sig, module, NA_character_)  # only sig get labels
+  )
+
+# pick which sig ones to label (top 10 by p)
+top_sig <- plot_dat %>%
+  filter(sig) %>%
+  arrange(p) %>%
+  slice_head(n = 10)
+
+mixpct=ggplot(plot_dat, aes(x = beta, y = neglog10_fdr, color = sig)) +
+  # points
+  geom_point(size = 2.6, alpha = 0.7) +
+  
+  # vertical line at no effect
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             color = "grey80",
+             linewidth = 0.5) +
+  
+  # horizontal line at p = 0.05
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dotted",
+             color = "grey75",
+             linewidth = 0.5) +
+  
+  # label only top/significant modules
+  geom_text_repel(
+    data = top_sig,
+    aes(label = module),
+    color = "grey20",
+    size = 3,
+    max.overlaps = 40,
+    box.padding = 0.45,
+    point.padding = 0.25,
+    min.segment.length = 0,
+    segment.color = "grey70",
+    segment.size = 0.35
+  ) +
+  
+  # colors: only sig in red
+  scale_color_manual(
+    values = c("FALSE" = "grey50", "TRUE" = "#d62828")
+  ) +
+  
+  labs(
+    x = "Effect of module on % colonization",
+    y = expression(-log[10](p)),
+    title = "Module-wise mixed models for colonization efficiency"
+  ) +
+  
+  # a bit more polished theme
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90", linewidth = 0.3),
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "grey30"),
+    axis.title.x = element_text(margin = margin(t = 8)),
+    axis.title.y = element_text(margin = margin(r = 8)),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+mixpct
+
+#Save plots
+ggsave(
+"Module-wise_mix_model_vs_PCTcol.pdf",
+mixpct,
+width = 15,
+height = 10,
+dpi = 300,
+units = "cm",
+path = out_mod
+)
+
+
+
+```
+
+```{r}
+### Loads 
+
+# assuming: df, kegg_cols already exist
+res_mod_abund <- map_df(kegg_cols, function(mod) {
+  # build formula with backticked KEGG column name
+  f <- as.formula(
+    paste0("log_median ~ `", mod, "` + Category + Colonization_mode + (1 | genus)")
+  )
+
+  # fit model, but don't crash the whole loop if one fails
+  m <- tryCatch(lmer(f, data = df), error = function(e) NULL)
+
+  term <- paste0("`", mod, "`")
+
+  # model failed → return NAs
+  if (is.null(m)) {
+    return(tibble(
+      module = mod,
+      beta   = NA_real_,
+      p      = NA_real_,
+      model  = "fit_failed"
+    ))
+  }
+
+  co <- summary(m)$coefficients
+
+  # sometimes the predictor is not in the table (singular fit, etc.)
+  if (!term %in% rownames(co)) {
+    return(tibble(
+      module = mod,
+      beta   = NA_real_,
+      p      = NA_real_,
+      model  = "term_missing"
+    ))
+  }
+
+  beta <- co[term, "Estimate"]
+
+  # try to find a p-value column (exists if lmerTest is loaded)
+  pcol <- which(colnames(co) %in% c("Pr(>|t|)", "Pr(>F)"))
+  pval <- if (length(pcol) == 1) co[term, pcol] else NA_real_
+
+  tibble(
+    module = mod,
+    beta   = beta,
+    p      = pval,
+    model  = "ok"
+  )
+}) %>%
+  mutate(p_adj = p.adjust(p, method = "fdr")) %>%
+  arrange(p_adj)
+
+# make the volcano-style plot object
+res_mod_abund_plot <- res_mod_abund %>%
+  mutate(
+    neglog10_p = -log10(p),
+    sig = !is.na(p) & p < 0.05
+  )
+
+# pick top modules to label (by raw p or by p_adj, your choice)
+top_hits <- res_mod_abund_plot %>%
+  filter(!is.na(p)) %>%
+  arrange(p) %>%
+  slice_head(n = 10)
+
+ggplot(res_mod_abund_plot, aes(x = beta, y = neglog10_p, color = sig)) +
+  geom_point() +
+  geom_hline(yintercept = -log10(0.05), linetype = 2, linewidth = 0.4) +
+  geom_text_repel(
+    data = top_hits,
+    aes(label = module),
+    max.overlaps = 20
+  ) +
+  scale_color_manual(values = c("FALSE" = "grey50", "TRUE" = "#d62828")) +
+  labs(
+    x = "Effect of module on log_median (abundance)",
+    y = "-log10(p-value)",
+    color = "p < 0.05",
+    title = "Module-wise mixed models for abundance"
+  ) +
+  theme_minimal()
+
+# top modules to label
+top_hits <- res_mod_abund_plot %>%
+  filter(!is.na(p)) %>%
+  arrange(p) %>%
+  slice_head(n = 5)
+
+mixab=ggplot(res_mod_abund_plot, aes(x = beta, y = neglog10_p)) +
+  # background points (nonsig)
+  geom_point(
+    data = ~filter(.x, !sig),
+    color = "grey70",
+    size = 2,
+    alpha = 0.7
+  ) +
+  # highlighted points (sig)
+  geom_point(
+    data = ~filter(.x, sig),
+    aes(color = sig),
+    size = 2.8
+  ) +
+  # p = 0.05 line
+  geom_hline(
+    yintercept = -log10(0.05),
+    linetype = 2,
+    linewidth = 0.4,
+    color = "grey50"
+  ) +
+  # labels for top hits
+  geom_text_repel(
+    data = top_hits,
+    aes(label = module),
+    size = 3,
+    max.overlaps = 40,
+    box.padding = 0.4,
+    point.padding = 0.25,
+    segment.color = "grey70"
+  ) +
+  scale_color_manual(
+    values = c("TRUE" = "#d62828"),
+    labels = c("TRUE" = "p < 0.05"),
+    drop = FALSE
+  ) +
+  labs(
+    x = "Effect of module on log_median (abundance)",
+    y = "-log10(p-value)",
+    title = "Module-wise mixed models for abundance"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+mixab
+
+ggsave(
+"Module-wise_mix_model_vs_abundance.pdf",
+mixab,
+width = 15,
+height = 10,
+dpi = 300,
+units = "cm",
+path = out_mod
+)
+
+```
+
+
+## Heatmaps
+KEEG completeness with colonization data
+
+```{r}
+# Get genus 
+df_sub <- df_model %>%
+  select(Strain, genus) 
+myloadcategoriesGenus <- merge(df_sub, myloadcategories,
+                               by.x = "Strain", by.y= "Strain_ID")
+
+mmmoldcat <- lmer(
+  median_Specific_CopyNum_norm ~ Number.of.modules + Category + (1 | genus),
+  data = myloadcategoriesGenus
+)
+  summary(mmmoldcat)
+
+x <- myloadcategoriesGenus$median_Specific_CopyNum_norm
+myloadcategoriesGenus$log_median <- log10(x + 1)
+
+mmmoldcatlog <- lmer(
+  log_median ~ Number.of.modules + Category + (1 | genus),
+  data = myloadcategoriesGenus
+)
+  summary(mmmoldcatlog)  
+
+#Since the random effect is 0, refit as an ordinary linear model to make it cleaner:
+m_lm <- lm(log_median ~ Number.of.modules + Category,
+           data = myloadcategoriesGenus)
+summary(m_lm)  
+  
+
+df <- myloadcategoriesGenus
+df$log_median_rank       <- rank(df$log_median,       ties.method = "average")
+df$Number.of.modules_rank <- rank(df$Number.of.modules, ties.method = "average")
+
+library(lme4)
+m_rank <- lmer(
+  log_median_rank ~ Number.of.modules_rank + Category + (1 | genus),
+  data = df
+)
+summary(m_rank)
+
+
+modu_abundance= ggplot(mysuccess_mono, aes(x = Number.of.modules, y = median_Specific_CopyNum_norm)) +
+  geom_jitter(aes(colour = Category.y, fill = Category.y), width = 0.1, shape = 21, stroke = 0.4, color = "black") +
+  scale_y_log10()+labs(x = "Number of modules (>80% completeness)", y = "Median abundance")+ scale_fill_manual(values = c('grey',  'deepskyblue3','chocolate2', 'green4')) +
+  stat_cor(method = "spearman", label.x = 25, label.y = 0.9, size=3) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE,  color = "black") + theme_bw() + theme(strip.background =element_rect(fill="white"), strip.text = element_text(face="bold", size=10), legend.position = "none") + facet_wrap(~Category.y)
+modu_abundance
+
+
+
+
+modules= ggplot(data = mysuccess_mono, aes(y = Number.of.modules, x = Category.y)) + # Move y and x here so than they can be used in stat_*
+    geom_dotplot(aes(fill = Category.y),   # Use fill = Species here not in ggplot()
+                 binaxis = "y",         # which axis to bin along
+                 binwidth = 3,        # Minimal difference considered diffeerent
+                 stackdir = "center"    # Centered
+                 ) +
+    stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.5) + stat_compare_means(aes(label = ..p.signif..), method="wilcox") + scale_fill_manual(values = c('grey',  'deepskyblue3','chocolate2', 'green4')) + theme_bw() +labs(y = "Number of modules (>80% completeness)")+ theme(axis.title.x = element_blank(), panel.background = element_rect(fill = "white", colour = "black", size = 0.5), legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+modules
+
+# Save plots
+
+ggsave(
+  "Abundance_vs_numbermodules80.pdf",
+  modu_abundance,
+  width  = 12,
+  height = 8,
+  dpi    = 300,
+  units  = "cm",
+  path   = out_heat
+)
+
+ggsave(
+  "Modules80bycategory.pdf",
+  modules,
+  width  = 10,
+  height = 10,
+  dpi    = 300,
+  units  = "cm",
+  path   = out_heat
+)
+```
+
+```{r}
+
+df_meta_sub <- df_cols %>%
+  left_join(df_meta, by = c("strain_id" = "Strain"))
+
+## 3) define colors
+col_colon <- colorRamp2(
+  c(0, 50, 100),
+  c("white", "khaki1","indianred" )
+)
+
+cat_cols <- c(
+  "Native"                      = "grey40",
+  "II: Opportunistic colonizers" = "deepskyblue3",
+  "I: Other bee species"        = "chocolate2",
+  "III: Other microbiomes"      = "green4"
+)
+
+
+##  top annotation with % colonization + Category 
+top_anno <- HeatmapAnnotation(
+  "% colonization" = df_meta_sub$pct_nonzero,
+  Category         = df_meta_sub$Category,
+  col = list(
+    "% colonization" = col_colon,
+    Category         = cat_cols,
+    Source           = source_cols
+  ),
+  annotation_height = unit(c(4, 4, 4), "mm"),
+  show_annotation_name = TRUE
+)
+
+
+column_split <- type_names %>% as.factor()
+
+ht <- Heatmap(
+  mat_completeness,
+  name = "Completeness",
+  col = colorRamp2(c(0, 100), c("#ffffff", "#08306b")),
+  top_annotation = top_anno,
+  column_split = column_split,
+  row_split = row_split,
+  #column_dend_side = "bottom",
+  border = TRUE,
+  heatmap_legend_param = list(title = "Presence"),
+  left_annotation = anno_left_module,
+  column_names_gp = grid::gpar(fontsize = 10),
+  row_names_gp = grid::gpar(fontsize = 8),
+  column_title_gp = grid::gpar(fontsize = 10),
+  row_title_gp = grid::gpar(fontsize = 10),
+  column_title_rot = 90,
+  row_title_rot = 0,
+  cluster_columns = TRUE,
+  cluster_rows = TRUE
+)
+
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+
+pdf(
+  file.path(out_heat, "Modules_all_by_pct_heatmap.pdf"),
+  width  = 20,  
+  height = 25   
+)
+draw(ht)   
+dev.off()
+```
+
+
+```{r}
+my80path  <- read.csv(
+  file.path(mod_dir, "Pathway_grupu_bycategory_80percentcompletnessfilter.csv"),
+  sep = ",",
+  header = TRUE
+)
+
+my80path2 <- read.csv(
+  file.path(mod_dir, "Pathway_group_80percentcompletnessfilter.csv"),
+  sep = ",",
+  header = TRUE
+)
+
+mycategories <- read.csv(
+  file.path(mod_dir, "strains_ID_metadata.csv"),
+  sep = ",",
+  header = TRUE
+)
+mystrainID <- mycategories   # your original script referred to both names
+
+# -------------------------------
+# 1) heatmap of pathway group × category
+# -------------------------------
+
+my80path_df <- as.data.frame(my80path, stringsAsFactors = FALSE)
+
+colnames(my80path_df) <- c(
+  "Pathway_group",
+  "Native",
+  "Opportunistic.colonizers",
+  "Other.bee.species",
+  "Other.microbiomes"
+)
+
+# convert numeric columns
+my80path_df[, -1] <- sapply(my80path_df[, -1], as.numeric)
+
+heatmap_data <- as.matrix(my80path_df[, -1])
+row_labels   <- my80path_df$Pathway_group
+
+pdf(file.path(out_heat, "heatmap_modules80_pathwaygroup_bycategory.pdf"),
+    width = 5, height = 6)
+
+gplots::heatmap.2(
+  heatmap_data,
+  Rowv = NA,
+  Colv = TRUE,
+  col = RColorBrewer::brewer.pal(11, "RdBu"),
+  scale = "column",
+  margins = c(10, 20),
+  labRow = row_labels,
+  dendrogram = "column",
+  trace = "none",
+  cexRow = 1,
+  cexColumn = 0.1,
+  ColSideColors = rep(c("grey", "deepskyblue3", "chocolate2", "green4")),
+  keysize = 1.5
+)
+dev.off()
+
+# -------------------------------
+# 2) heatmaps for all strains by pathway group
+# -------------------------------
+
+# convert numerics
+my80path2[, -1] <- sapply(my80path2[, -1], as.numeric)
+
+annotations <- my80path2$Pathway_group
+heatmap_data2 <- as.matrix(my80path2[, -1])
+
+# build color vector by category for columns
+color_vector <- rep("black", ncol(heatmap_data2))
+for (i in seq_len(nrow(mycategories))) {
+  sid <- trimws(mycategories$Strain_ID[i])
+  idx <- which(colnames(heatmap_data2) == sid)
+  if (length(idx) == 0) {
+    cat("Warning: No matching column found for Strain_ID:", sid, "\n")
+  } else {
+    color_vector[idx] <- switch(
+      mycategories$Category[i],
+      "Native" = "grey",
+      "Opportunistic colonizers" = "deepskyblue3",
+      "Other bee species" = "chocolate2",
+      "Other microbiomes" = "green4",
+      "black"
+    )
+  }
+}
+
+# first heatmap (no legend)
+pdf(file.path(out_heat, "heatmap_modules80_by_pathwaygroup_nolegend.pdf"),
+    width = 10, height = 6)
+
+gplots::heatmap.2(
+  heatmap_data2,
+  Rowv = FALSE,
+  Colv = TRUE,
+  col = RColorBrewer::brewer.pal(11, "RdBu"),
+  scale = "column",
+  labRow = annotations,
+  trace = "none",
+  density = "none",
+  cexRow = 1,
+  cexColumn = 0.5,
+  key = FALSE,
+  ColSideColors = color_vector,
+  margins = c(10, 20)
+)
+dev.off()
+
+# -------------------------------
+# 3) same matrix but colored by load category
+# -------------------------------
+
+# initialize second color vec (same length as columns)
+color_vector2 <- rep("black", ncol(heatmap_data2))
+for (i in seq_len(nrow(mystrainID))) {
+  sid <- trimws(mystrainID$Strain_ID[i])
+  idx <- which(colnames(heatmap_data2) == sid)
+  if (length(idx) == 0) {
+    cat("Warning: No matching column found for Strain_ID:", sid, "\n")
+  } else {
+    color_vector2[idx] <- switch(
+      mystrainID$Load_category[i],
+      "High colonization"   = "darkred",
+      "Medium colonization" = "tomato3",
+      "Low colonization"    = "sandybrown",
+      "No colonization"     = "khaki1",
+      "black"
+    )
+  }
+}
+
+pdf(file.path(out_heat, "heatmap_modules80_by_pathwaygroup_andloadcategory.pdf"),
+    width = 10, height = 6)
+
+gplots::heatmap.2(
+  heatmap_data2,
+  Rowv = FALSE,
+  Colv = TRUE,
+  col = RColorBrewer::brewer.pal(11, "RdBu"),
+  scale = "column",
+  labRow = annotations,
+  trace = "none",
+  density = "none",
+  cexRow = 1,
+  cexColumn = 0.5,
+  key = FALSE,
+  ColSideColors = color_vector2,
+  margins = c(10, 20)
+)
+dev.off()
+
+```
+
+
+
+
+
+
