@@ -1,0 +1,439 @@
+---
+title: "Bacterial qPCR abundance"
+author: "Silvia Moriano-Gutierrez"
+date: "12/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##################################
+## Project description
+##################################
+Project: Host and microbial factors influence gut bacteria in honey bees
+Purpose of this script: This script quantifies gut colonization loads for a diverse panel of 56 bacterial strains in gnotobiotic Apis mellifera bees, measured 7 days post-inoculation. It summarizes colonization outcomes in monocolonization and synthetic-community (SC) contexts across four ecological categories (Native, Opportunistic colonizers, Non-native bee-associated, Other microbes). Loads are derived from strain-specific qPCR, allowing comparison of both bacterial abundance per gut and the fraction of bees exceeding the inoculum threshold.
+
+## 1. Packages and project paths
+```{r}
+#Load libraries
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(data.table)
+library(tidyverse)
+library(beeswarm)
+library(ggbeeswarm)
+library(magrittr)
+library(ggpubr)
+library(tibble)
+library(lme4)
+
+# Project directories
+data_dir <- here::here("data")
+out_dir <- here::here("output")
+fig_dir <- file.path(out_dir, "figures")
+tab_dir <- file.path(out_dir, "tables")
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(tab_dir, showWarnings = FALSE, recursive = TRUE)
+
+```
+
+
+## 2. Load data
+```{r}
+#Main qPCR table
+mycopynum =  read.csv(file.path(data_dir, "5_Data_qPCR_CopyNum_all_combined_LOD.csv"))
+dim(mycopynum)
+mycopynum$Strain
+
+str(mycopynum)
+
+# Get metadata
+myinfo= read.csv(file.path(data_dir, "Metadata.csv")
+dim(myinfo)
+myinfo$Strain
+
+# merge
+mycopynum= merge(mycopynum, myinfo, by="Strain", all.x = TRUE)
+dim(mycopynum)
+
+```
+## 3. Strain-specific LODs
+Based on specific primers. Supplementary File S2
+```{r}
+#lod levels determined by the standard curve
+lod_tbl <- tibble::tribble(
+~Strain, ~lod,
+"ESL0937", 23,
+"ESL0497", 2841,
+"ESL0936", 238,
+"ESL0940", 298,
+"ESL0165", 807,
+"BBC0329", 96,
+"ESL0899", 3818,
+"ESL0610", 667,
+"ESL0607", 370,
+"ESL0611", 645,
+"ESL1027", 5613,
+"ESL0254", 1003,
+"ESL0253", 1.49e003,
+"I49", 3.34e004,
+"KB1", 3.50e003,
+"ESL0230", 8.37e002,
+"ESL0601", 1000,
+"ESL0228", 2.61e003,
+"ESL0404", 1.54e003,
+"ESL0680", 32e003,
+"ESL0232", 6.26e003,
+"ESL0721", 2.31e003,
+"ESL0405", 4.22e003,
+"ESL0679", 1.83e003,
+"ESL0441", 1.58e003,
+"ESL0693", 2.21e003,
+"ESL0944", 3.10e003,
+"ESL0684", 9.63e002,
+"ESL0443", 181,
+"ESL0941", 2038,
+"ESL0943", 460,
+"ESL0449", 460,
+"ESL0447", 22649,
+"ESL0954", 9355,
+"ESL1042", 397,
+"ESL1044", 230,
+
+#natives / 1000-limit ones
+
+"ESL0185", 1000,
+"ESL0184", 1000,
+"ESL0186", 1000,
+"ESL0183", 1000,
+"ESL0177", 4.37e003,
+"ESL0178", 3.03e003,
+"ESL0145", 1.87e003,
+"ESL0198", 5.54e002,
+"ESL0197", 1000,
+"ESL0169", 2.87e002,
+"ESL0024", 1000,
+"ESL0034", 1000,
+"ESL0710", 2.39e002,
+"ESL0233", 2.39e002
+)
+
+# Apply LODs to normalized copy number
+copynum <- copynum |>
+left_join(lod_tbl, by = "Strain") |>
+mutate(
+Specific_CopyNum_norm = if_else(
+!is.na(lod) & !is.na(Specific_CopyNum) & Specific_CopyNum < lod,
+0,
+Specific_CopyNum_norm
+)
+)
+
+## Add colonization mode to dataframe
+%||% <- function(x, y) if (is.null(x)) y else if (is.na(x)) y else x
+
+copynum <- copynum |>
+mutate(
+Colonization_mode = if_else(
+str_detect(Sample.description %||% "", "\+SC"),
+"Comm",
+"Mono"
+),
+Colonization_mode = factor(Colonization_mode, levels = c("Mono", "Comm"))
+)
+
+```
+
+## 4. Descriptive summaries
+
+#4.1. Median abundance
+```{r }
+median_abund <- copynum |>
+filter(Specific_CopyNum_norm > 0) |>
+group_by(Strain, Sample.description) |>
+summarise(
+median_Specific_CopyNum_norm = median(Specific_CopyNum_norm, na.rm = TRUE),
+.groups = "drop"
+)
+
+```
+#4.2 Percent colonized
+```{r }
+pct_colonized <- copynum |>
+group_by(Strain, Sample.description) |>
+summarise(
+pct_nonzero = mean(Specific_CopyNum_norm > 0, na.rm = TRUE) * 100,
+.groups = "drop"
+)
+
+```
+#4.3 Combine and export
+```{r }
+summary_tbl <- median_abund |>
+full_join(pct_colonized, by = c("Strain", "Sample.description")) |>
+mutate(
+Colonization_mode = if_else(str_detect(Sample.description %||% "", "\+SC"), "Comm", "Mono")
+) |>
+left_join(meta, by = "Strain")
+
+readr::write_csv(
+summary_tbl,
+file.path(tab_dir, "qPCR_median_abundances_pct_colonization_unfiltered.csv")
+)
+
+head(summary_tbl)
+ 
+
+```
+
+## 5. Filter by inoculum threshold
+```{r }
+inoculum_threshold <- 1e4
+
+copynum_filt <- copynum |>
+mutate(
+Specific_CopyNum = if_else(Specific_CopyNum < inoculum_threshold, 0, Specific_CopyNum),
+Specific_CopyNum_norm = if_else(Specific_CopyNum == 0, 0, Specific_CopyNum_norm)
+)
+
+readr::write_csv(
+copynum_filt,
+file.path(data_dir, "5_Data_qPCR_CopyNum_all_combined_LOD_filteredby_inoculum.csv")
+)
+
+```
+
+
+## 6. Wilcoxon tests per strain
+```{r}
+run_wilcox_per_strain <- function(df) {
+strains <- sort(unique(df$Strain))
+
+purrr::map_dfr(strains, function(st) {
+dat <- df |>
+filter(Strain == st)
+
+if (n_distinct(dat$Colonization_mode) == 2) {
+  wt <- wilcox.test(
+    Specific_CopyNum_norm ~ Colonization_mode,
+    data = dat,
+    exact = FALSE
+  )
+
+  tibble(
+    Strain      = st,
+    n_mono      = sum(dat$Colonization_mode == "Mono"),
+    n_comm      = sum(dat$Colonization_mode == "Comm"),
+    median_mono = median(dat$Specific_CopyNum_norm[dat$Colonization_mode == "Mono"], na.rm = TRUE),
+    median_comm = median(dat$Specific_CopyNum_norm[dat$Colonization_mode == "Comm"], na.rm = TRUE),
+    p_value     = wt$p.value
+  )
+} else {
+  tibble(
+    Strain      = st,
+    n_mono      = sum(dat$Colonization_mode == "Mono"),
+    n_comm      = sum(dat$Colonization_mode == "Comm"),
+    median_mono = NA_real_,
+    median_comm = NA_real_,
+    p_value     = NA_real_
+  )
+}
+
+
+}) |>
+mutate(p_adj = p.adjust(p_value, method = "BH"))
+}
+
+wilcox_unfiltered <- run_wilcox_per_strain(copynum)
+wilcox_filtered   <- run_wilcox_per_strain(copynum_filt)
+
+readr::write_csv(
+wilcox_unfiltered,
+file.path(tab_dir, "wilcox_unfiltered_monovscomm.csv")
+)
+readr::write_csv(
+wilcox_filtered,
+file.path(tab_dir, "wilcox_filtered_monovscomm.csv")
+)
+
+head(wilcox_filtered)
+
+
+}) |>
+mutate(p_adj = p.adjust(p_value, method = "BH"))
+}
+
+wilcox_unfiltered <- run_wilcox_per_strain(copynum)
+wilcox_filtered   <- run_wilcox_per_strain(copynum_filt)
+
+readr::write_csv(
+wilcox_unfiltered,
+file.path(tab_dir, "wilcox_unfiltered_monovscomm.csv")
+)
+readr::write_csv(
+wilcox_filtered,
+file.path(tab_dir, "wilcox_filtered_monovscomm.csv")
+)
+
+head(wilcox_filtered)
+
+
+```
+
+## 7. Plots
+
+#7.1 Abundance per strain
+```{r }
+
+p_abund <- copynum_filt |>
+ggplot(aes(x = Strain, y = Specific_CopyNum_norm, fill = Colonization_mode)) +
+geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+ggbeeswarm::geom_quasirandom(width = 0.25, size = 1, alpha = 0.6) +
+scale_y_log10() +
+labs(
+x = "Strain",
+y = "Specific copy number (normalized, log10)",
+fill = "Colonization"
+) +
+theme_bw() +
+theme(
+axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+)
+
+p_abund
+
+ggplot2::ggsave(
+filename = file.path(fig_dir, "abundance_by_strain_filtered.pdf"),
+plot     = p_abund,
+width    = 10,
+height   = 6
+)
+
+```
+
+#7.2 Colonization success by category 
+```{r }
+if ("Category" %in% names(copynum_filt)) {
+colonization_by_cat <- copynum_filt |>
+group_by(Category, Colonization_mode) |>
+summarise(
+n_total = n(),
+n_colonized = sum(Specific_CopyNum_norm > 0, na.rm = TRUE),
+pct_col = n_colonized / n_total * 100,
+.groups = "drop"
+)
+
+p_col <- colonization_by_cat |>
+ggplot(aes(x = Category, y = pct_col, fill = Colonization_mode)) +
+geom_col(position = position_dodge(width = 0.8)) +
+labs(
+x = NULL,
+y = "% samples colonized",
+fill = "Colonization"
+) +
+theme_bw()
+
+p_col
+
+ggplot2::ggsave(
+filename = file.path(fig_dir, "colonization_success_by_category.pdf"),
+plot = p_col,
+width = 6,
+height = 4
+)
+}
+
+```
+
+#7.3 Ratio of colonizing strains per category and colonization mode
+```{r }
+#Get proportions per category and Colonization mode
+#pct_colonization_category <- mycopynum_filt %>%
+ # filter(!is.na(Category), Group != "Control") %>%
+ # group_by(Category, Colonization_mode) %>%
+#  summarize(pct_nonzero = sum(Specific_CopyNum_norm > 0, na.rm = TRUE) / n(), Number_colonizing=sum(Specific_CopyNum_norm > 0, na.rm = TRUE), total= n()) %>%
+ # mutate(pct_nonzero = pct_nonzero * 100)
+#pct_colonization_category
+
+
+# Proportion of colonization in Monocolonization
+success_mono <- c(140,157,117,52) # Category order= Native, Other bee species, Opportunistic colonizers, Other microbiomes
+total_mono <- c(156, 230, 132, 113)
+
+data_mono <- data.frame(success = success_mono, total = total_mono) # Create a data frame from from proportion data
+
+# Perform the overall test for equality of proportions with a z-test
+prop_test_result_mono <- prop.test(x = data_mono$success, n = data_mono$total, correct = TRUE)
+# Perform pairwise comparisons with FDR correction
+pairwise_results_mono <- pairwise.prop.test(
+  x = data_mono$success,
+  n = data_mono$total,
+  p.adjust.method = "fdr"  # Use FDR correction
+)
+
+#Print results
+print(prop_test_result_mono) # Print the overall test result
+print(pairwise_results_mono) # Print pairwise comparison results with FDR correction
+ 
+
+# Proportion of colonization in Community
+success_com <- c(138,153,99,31)  # Category order= Native, Other bee species, Opportunistic colonizers, Other microbiomes
+total_com <- c(168, 235, 131, 114)
+
+data_comm <- data.frame(success = success_com, total = total_com) # Create a data frame from from proportion data
+
+# Perform the overall test for equality of proportions with a z-test
+prop_test_result_comm <- prop.test(x = data_comm$success, n = data_comm$total, correct = TRUE)
+# Perform pairwise comparisons with FDR correction
+pairwise_results_comm <- pairwise.prop.test(
+  x = data_comm$success,
+  n = data_comm$total,
+  p.adjust.method = "fdr"  # Use FDR correction
+)
+
+#Print results
+print(prop_test_result_comm) # Print the overall test result
+print(pairwise_results_comm) # Print pairwise comparison results with FDR correction
+ 
+
+# Create a dataframe for plotting
+plot_data <- data.frame(
+  Category = factor(rep(c("Native", "Other Bee species", "Opportunistic colonizers", "Other Microbiomes"), times = 2)),
+  Proportion = c(0.8974359, 0.6826087, 0.8863636, 0.4601770, 0.8214286, 0.6510638, 0.7557252, 0.2719298),
+  Colonization_mode = factor(rep(1:8, each = 1), labels = c("Mono", "Mono", "Mono", "Mono", "Comm", "Comm", "Comm", "Comm"))
+)
+
+# Plot
+# Create a custom order for the Category levels
+category_order <- c("Native", "Other Bee species", "Opportunistic colonizers", "Other Microbiomes")
+# Reorder the Category factor based on the custom order
+plot_data$Category <- factor(plot_data$Category, levels = category_order, ordered = TRUE)
+plot_data$Colonization_mode <- factor(plot_data$Colonization_mode, levels = c("Mono", "Comm"),
+                  labels = c("Monocolonization", "In community"))
+
+
+success= ggplot(plot_data, aes(x=Category, y=Proportion, fill = Category))+
+  geom_bar(stat='identity', width=0.5, show.legend = FALSE, color="black", stroke=0.5)+
+  facet_wrap(~Colonization_mode) +
+  ylim(0, 1.3) +
+  labs(y = "Proportion of colonization success") +
+  scale_fill_manual(values = c("darkgrey","chocolate1", "deepskyblue2", "green4") )+
+   theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.background =element_rect(fill="white"), axis.title.x = element_blank())+ theme(strip.text = element_text(face="bold", size=10), axis.text=element_text(size=10)) +
+  scale_y_continuous(limits = c(0,1), expand = expansion(mult = c(0, .1)))
+
+print(success)
+
+```
+
+
+## 8. Session info
+```{r }
+ sessionInfo()
+```
+
